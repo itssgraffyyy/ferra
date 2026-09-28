@@ -1,0 +1,56 @@
+# FERA traffic model defaults per traffic class.
+#
+# Mirrored by fera.traffic.profiles.TRAFFIC_PROFILE_DOCUMENT (drift is caught by
+# tests/test_traffic.py).  Values are deterministic inputs to the generators.
+#
+# Honest labelling reminder: these profiles describe the *shape* of an
+# application class.  They are not captures of the real application.
+schema_version: 1
+description: Traffic model defaults per traffic class.  All values are deterministic
+  inputs to the traffic generators; nothing here claims to reproduce a specific
+  application.
+responder:
+  echo_port: 9099
+  http_port: 8080
+  iperf_port: 5201
+profiles:
+  icmp:
+    interval_ms: 500
+    payload_bytes: 56
+    note: ICMP echo request/reply, answered by the peer kernel
+  web:
+    port: 8080
+    request_count: 10
+    payload_bytes: 2000000
+    scheme: http
+    note: HTTP object requests plus one larger transfer against the controlled endpoint
+  email_like:
+    port: 9099
+    sessions: 4
+    request_bytes: 65536
+    chunk_bytes: 8192
+    pause_ms: 500
+    note: request/response sessions with mail-like message sizes
+  voip_like:
+    port: 9099
+    packet_size: 160
+    interval_ms: 20
+    bidirectional: false
+    note: G.711-shaped constant bit rate UDP flow (160 byte payloads every 20 ms)
+  video_like:
+    port: 9099
+    target_mbps: 4.0
+    chunk_bytes: 16384
+    burst_on_ms: 2000
+    burst_off_ms: 500
+    note: sustained/bursty stream; iperf3 is used when available
+  messaging_like:
+    port: 9099
+    bursts: 6
+    messages_per_burst: 3
+    message_size: 320
+    burst_gap_ms: 1200
+    message_gap_ms: 250
+    note: short bursts of small messages with typing-like pauses
+  control:
+    note: "no application traffic: IKE/ESP control traffic only"

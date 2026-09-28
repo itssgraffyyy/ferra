@@ -1,0 +1,95 @@
+﻿
+=== toplevel ===
+G:/
+
+=== gitdir ===
+G:/.git
+
+=== status ===
+git : warning: could not open directory 'System Volume Information/': Permission denied
+At G:\project\p3_check.ps1:11 char:6
++ $s = git --no-pager status --porcelain -b 2>&1 | Out-String; Log $s
++      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: could ...rmission denied:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+## No commits yet on main
+?? $RECYCLE.BIN/
+?? "Adobe After Effects Auto-Save/"
+?? Arch.zip
+?? Arch/
+?? "ChatGPT Installer.exe"
+?? Microsoft.Services.Store.winmd
+?? MinGW/
+?? "New Volume (F) - Shortcut.lnk"
+?? NotiSync-demo/
+?? NotiSyncc/
+?? "Photoshop Temp110919313712"
+?? "Photoshop Temp12592113116"
+?? "Photoshop Temp13115015340"
+?? "Photoshop Temp173202511056"
+?? "Photoshop Temp17668212476"
+?? "Photoshop Temp22059637428"
+?? "Photoshop Temp27794772100"
+?? "Photoshop Temp31169847060"
+?? "Photoshop Temp37722012444"
+?? "Photoshop Temp39031615092"
+?? "Photoshop Temp46272215168"
+?? "Photoshop Temp6838412256"
+?? "Photoshop Temp7433611680"
+?? "Photoshop Temp7539511244"
+?? "Photoshop Temp757503188"
+?? "Photoshop Temp7707008576"
+?? "Photoshop Temp7930514460"
+?? "Photoshop Temp8120711844"
+?? "Photoshop Temp8346913176"
+?? "Program Files/"
+?? Python313/
+?? QualityStats/
+?? _Getintopc.com_Adobe_After_Effects_2022_v22.0.0.111x64.rar
+?? _Getintopc.com_Adobe_After_Effects_2022_v22.0.0.111x64/
+?? "adobe AF/"
+?? after-effects/
+?? agave-install-tmp/
+?? "app data/"
+?? basic-projects/
+?? faah.aep
+?? faahahahhaha.aep
+?? final.aep
+?? hack/
+?? noti/
+?? project/
+?? pvt-projects/
+?? result/
+?? sih/
+?? ulog_HeadlightsCC_AppCrash__444edc6d-c184-4586-95b3-556687da1533_0.rdy
+?? ulog_HeadlightsCC_AppCrash__4b2c2b50-f267-45b7-b97f-c7e958c8d3cc_0.xml
+?? yt-edit/
+?? yt-striver/
+
+=== log ===
+git : fatal: your current branch 'main' does not have any commits yet
+At G:\project\p3_check.ps1:13 char:6
++ $l = git --no-pager log --oneline -8 2>&1 | Out-String; Log $l
++      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (fatal: your cur...any commits yet:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+=== remote ===
+origin	https://github.com/itssgraffyyy/ferra.git (fetch)
+origin	https://github.com/itssgraffyyy/ferra.git (push)
+
+=== gitignore-check ===
+False
+True
+=== pytest ===
+pytest 9.1.1
+
+pytest 9.1.1
+
+=== pip ===
+pip 25.3 from C:\Users\lenovo\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\pip (python 3.14)
+
+
+=== DONE ===

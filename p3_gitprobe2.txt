@@ -1,0 +1,35 @@
+﻿
+=== ls-remote origin ===
+679b4b705d68ea85f2b4c3e4a81193b8918a596c	HEAD
+679b4b705d68ea85f2b4c3e4a81193b8918a596c	refs/heads/main
+
+=== gitdir listing ===
+hooks
+info
+objects
+refs
+COMMIT_EDITMSG
+config
+description
+HEAD
+index
+
+=== logs dir ===
+
+=== user.name ===
+itssgraffyyy
+
+=== user.email ===
+kaushalshivangi06@gmail.com
+
+=== global list ===
+filter.lfs.clean=git-lfs clean -- %f
+filter.lfs.smudge=git-lfs smudge -- %f
+filter.lfs.process=git-lfs filter-process
+filter.lfs.required=true
+user.name=itssgraffyyy
+user.email=kaushalshivangi06@gmail.com
+core.autocrlf=true
+safe.directory=G:/
+
+=== DONE ===

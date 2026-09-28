@@ -1,0 +1,50 @@
+# FERA testbed topology - single source of truth for addresses and selectors.
+#
+# This document is mirrored by fera.testbed.topology.DEFAULT_TOPOLOGY_DOCUMENT;
+# tests/test_topology.py fails if the two drift apart, so edit both together.
+#
+# Two Linux network namespaces joined by a veth pair.  Each namespace is one
+# IPsec endpoint with a protected address behind it:
+#
+#   ns fera-a : fera-va 10.10.10.1/24  + protected 10.20.0.1/24
+#   ns fera-b : fera-vb 10.10.10.2/24  + protected 10.30.0.1/24
+#
+# Tunnel mode protects 10.20.0.0/24 <-> 10.30.0.0/24,
+# transport mode protects the host pair 10.10.10.1/32 <-> 10.10.10.2/32.
+schema_version: 1
+name: netns_dualstack
+description: Two Linux network namespaces joined by a veth pair.  Each namespace
+  is one IPsec endpoint with an additional protected address behind it (tunnel
+  mode).
+runner: netns
+link:
+  ipv4: 10.10.10.0/24
+  ipv6: fd00:10:10::/64
+  mtu: 1400
+interfaces:
+  veth_a: fera-va
+  veth_b: fera-vb
+  lan_a: fera-lana
+  lan_b: fera-lanb
+ike:
+  port: 500
+  nat_t_port: 4500
+endpoints:
+  a:
+    name: endpoint-a
+    role: initiator
+    ike_id: endpoint-a.fera.test
+    netns: fera-a
+    outer_ipv4: 10.10.10.1/24
+    outer_ipv6: fd00:10:10::1/64
+    protected_ipv4: 10.20.0.1/24
+    protected_ipv6: fd00:20::1/64
+  b:
+    name: endpoint-b
+    role: responder
+    ike_id: endpoint-b.fera.test
+    netns: fera-b
+    outer_ipv4: 10.10.10.2/24
+    outer_ipv6: fd00:10:10::2/64
+    protected_ipv4: 10.30.0.1/24
+    protected_ipv6: fd00:30::1/64

@@ -1,0 +1,4 @@
+# Verification tooling for the FERA repository.
+pytest>=7.4
+ruff>=0.6
+mypy>=1.10

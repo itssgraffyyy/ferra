@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# FERA generated data (directories are kept so the layout exists in a checkout)
+data/raw/*
+data/processed/*
+data/logs/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/logs/.gitkeep
+# generated manifest & reports are reproducible artefacts
+data/manifests/*.json
+data/manifests/*.txt
+
+# Credentials: never commit testbed keys or generated secrets
+**/swanctl.secrets
+**/secrets/
+*.psk
+*.pem
+*.key
+!docs/**/*.md

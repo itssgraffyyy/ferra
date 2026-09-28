@@ -1,0 +1,10 @@
+# FERA runtime dependencies
+#
+# Deliberately small: the pipeline is built on the Python standard library plus
+# PyYAML for the experiment/profile documents.
+PyYAML>=6.0
+
+# Development / verification tooling (pip install -r requirements-dev.txt)
+#   pytest>=7.4
+#   ruff>=0.6
+#   mypy>=1.10

@@ -1,0 +1,40 @@
+﻿
+=== branches -a ===
+
+=== log --all ===
+
+=== reflog ===
+git : fatal: your current branch 'main' does not have any commits yet
+At G:\project\p3_gitprobe.ps1:11 char:6
++ Log (git --no-pager reflog -12 2>&1 | Out-String)
++      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (fatal: your cur...any commits yet:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+=== config ===
+core.repositoryformatversion=0
+core.filemode=false
+core.bare=false
+core.logallrefupdates=true
+core.worktree=G:/
+core.symlinks=false
+core.ignorecase=true
+remote.origin.url=https://github.com/itssgraffyyy/ferra.git
+remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*
+
+=== worktree list ===
+G:  0000000 [main]
+
+=== g-project-git ===
+False
+=== packed-refs ===
+
+=== refs ===
+G:\.git\refs\heads
+G:\.git\refs\tags
+
+=== HEAD ===
+ref: refs/heads/main
+
+=== DONE ===

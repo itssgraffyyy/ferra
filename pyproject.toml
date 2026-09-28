@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fera"
+version = "0.1.0"
+description = "FERA - AI-driven IPsec VPN protocol analysis and security assessment platform (testbed + dataset factory)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+filterwarnings = ["error::DeprecationWarning:fera.*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "RET", "PIE", "T20", "ARG", "N", "PL"]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "PLR0913", # several testbed functions legitimately take many arguments
+    "PLR0912", # the experiment runner branches explicitly on purpose
+    "PLR0911", # state machine branches
+    "PLR0915", # complex pcap scanner logic
+    "SIM105",  # contextlib.suppress has higher overhead and is less explicit in resource cleanups
+
+    "PLR2004", # magic values are meaningful in networking code
+    "N818",    # our error classes do not use an `Error` suffix consistently
+    "ARG002",  # interface methods may ignore arguments
+    "ARG001",
+    "SIM108",
+    "PLC0415", # lazy imports avoid import cycles
+    "PLW0603",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["PLR0915", "PLR0913", "ARG001", "ARG002", "T20"]
+"scripts/*" = ["T20", "E402", "PLC0415", "ARG001"]
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src"
+packages = ["fera"]
+ignore_missing_imports = true
+warn_unused_ignores = false
+no_implicit_optional = true
+warn_redundant_casts = true
