@@ -1,7 +1,0 @@
-﻿
-=== COMMIT_EDITMSG ===
-initial setup done
-
-=== object count ===
-14320
-=== fetch origin ===
