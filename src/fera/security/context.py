@@ -662,7 +662,7 @@ class AssessmentContext:
         cls,
         analysis: ProtocolAnalysis | Mapping[str, Any],
         *,
-        traffic: TrafficPrediction | Mapping[str, Any] | str | Any | None = None,
+        traffic: TrafficPrediction | Mapping[str, Any] | str | Path | None = None,
         configured: ConfiguredParameters | Mapping[str, Any] | None = None,
         analysis_id: str | None = None,
     ) -> AssessmentContext:

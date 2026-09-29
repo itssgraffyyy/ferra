@@ -121,6 +121,42 @@ def test_setup_netns_testbed_print_only() -> None:
     assert "ip -6 route replace fd00:30::/64 via fd00:10:10::2 src fd00:20::1" in result.stdout
 
 
+def test_assess_security_on_synthetic_pcap(tmp_path: Path) -> None:
+    pcap = write_pcap(tmp_path / "demo.pcap", ike_and_esp_frames())
+    report = tmp_path / "security" / "report.json"
+    result = run_script(
+        "assess_security.py",
+        "--pcap",
+        str(pcap),
+        "--no-tshark",
+        "--out",
+        str(report),
+        "--json",
+    )
+    assert result.returncode == 0, result.stderr
+    assert report.is_file()
+    assert "security_score" in result.stdout
+
+    gated = run_script(
+        "assess_security.py",
+        "--pcap",
+        str(pcap),
+        "--no-tshark",
+        "--out",
+        str(tmp_path / "security2.json"),
+        "--fail-under",
+        "100",
+    )
+    assert gated.returncode == 1
+    assert "below --fail-under" in gated.stderr
+
+
+def test_generate_security_policy_docs_check() -> None:
+    result = run_script("generate_security_policy_docs.py", "--check")
+    assert result.returncode == 0, result.stderr
+    assert "up to date" in result.stdout
+
+
 def test_build_manifest_on_empty_directory(tmp_path: Path) -> None:
     result = run_script(
         "build_manifest.py",

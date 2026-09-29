@@ -21,6 +21,7 @@ words that the answer key was not one of them.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from ..analysis.models import ProtocolAnalysis
@@ -63,7 +64,7 @@ def assess_security(
     analysis: ProtocolAnalysis | Mapping[str, Any],
     *,
     configured: ConfiguredParameters | Mapping[str, Any] | None = None,
-    traffic: TrafficPrediction | Mapping[str, Any] | str | None = None,
+    traffic: TrafficPrediction | Mapping[str, Any] | str | Path | None = None,
     rules: Sequence[Rule] | None = None,
     analysis_id: str | None = None,
     inputs: Mapping[str, Any] | None = None,
