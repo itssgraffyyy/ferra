@@ -175,6 +175,12 @@ def _ref(status: EvidenceStatus, source: str, detail: str, **details: Any) -> tu
     return (EvidenceRef(status=status, source=source, detail=detail, details=details),)
 
 
+#: Argument names :func:`_ref` already owns.  A rule that spreads a summary into
+#: the keyword arguments must not collide with them (``metadata_summary`` has a
+#: ``source`` key of its own, for instance).
+_REF_RESERVED = frozenset({"status", "source", "detail", "details"})
+
+
 def _unassessed(subject: str, reason: str) -> RuleVerdict:
     """The verdict for "this capture cannot answer the question"."""
     return RuleVerdict(
@@ -534,11 +540,16 @@ def _lifetime_verdict(context: AssessmentContext, *, scope: str) -> RuleVerdict:
         "maximum_s": ceilings.maximum_s,
     }
     if tier.is_weakness:
+        boundary = (
+            f"maximum of {ceilings.maximum_s}s"
+            if float(seconds) > ceilings.maximum_s
+            else f"acceptable value of {ceilings.acceptable_s}s"
+        )
         return RuleVerdict(
             status=FindingStatus.WARNING if tier is PolicyTier.DEPRECATED else FindingStatus.FAIL,
             severity=TIER_SEVERITY[tier],
             explanation=(
-                f"{subject} is {seconds}s, above this baseline's ceiling of {ceilings.maximum_s}s: {ceilings.rationale}"
+                f"{subject} is {seconds}s, above this baseline's {boundary}: {ceilings.rationale}"
             ),
             evidence=refs,
             recommendation=f"rekey at most every {ceilings.acceptable_s}s",
@@ -548,7 +559,9 @@ def _lifetime_verdict(context: AssessmentContext, *, scope: str) -> RuleVerdict:
         )
     return RuleVerdict(
         status=FindingStatus.PASS,
-        explanation=f"{subject} is {seconds}s, within this baseline's ceiling of {ceilings.maximum_s}s",
+        explanation=(
+            f"{subject} is {seconds}s, within this baseline's target of {ceilings.acceptable_s}s"
+        ),
         evidence=refs,
         details=details,
     )
@@ -1183,7 +1196,11 @@ def _traffic_volume_verdict(context: AssessmentContext) -> RuleVerdict:
         EvidenceStatus.OBSERVED,
         "analysis.esp_flows",
         f"{packets} ESP packet(s), {summary.get('esp_bytes', 0)} byte(s) over {summary.get('esp_flows', 0)} flow(s)",
-        **{key: value for key, value in summary.items() if not isinstance(value, dict)},
+        **{
+            key: value
+            for key, value in summary.items()
+            if not isinstance(value, dict) and key not in _REF_RESERVED
+        },
     )
     if packets < MIN_PACKETS_FOR_SEQUENCE_ANALYSIS:
         return RuleVerdict(
