@@ -11,8 +11,9 @@ The report is written as JSON beside the other processed artefacts
 
 Ground truth is never an input.  ``--config`` is the testbed's own configuration
 (graded ``CONFIGURED``) and ``--ml-prediction`` a classifier result (graded
-``INFERRED``); a labelled sample handed to either one is refused outright, so a
-score can never be steered by the answer key.
+``INFERRED``).  A labelled sample presented as a prediction is refused outright,
+and ``--config`` reads only a fixed set of algorithm keys, so a score can never
+be steered by the answer key.
 """
 
 from __future__ import annotations
