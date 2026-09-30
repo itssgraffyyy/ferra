@@ -4,6 +4,21 @@
 # PyYAML for the experiment/profile documents.
 PyYAML>=6.0
 
+# Optional analysis back end: scapy parses PCAPs natively (fast) while the
+# fallback path only needs the standard library.
+scapy>=2.5
+
+# HTTP API (python -m fera.api.main); the pipeline itself does not need them.
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+
+# Traffic classifier: inference needs joblib to load an artefact, and scikit-learn
+# plus numpy to train one (scripts/train_traffic_model.py).
+joblib>=1.3
+scikit-learn>=1.4
+numpy>=1.26
+
 # Development / verification tooling (pip install -r requirements-dev.txt)
 #   pytest>=7.4
 #   ruff>=0.6
