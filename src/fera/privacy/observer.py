@@ -68,7 +68,7 @@ def _endpoint_identity(analysis: Mapping[str, Any]) -> Observation:
             topic="identity",
             exposure="unknown",
             finding="no ESP flow endpoints were recorded, so endpoint exposure could not be evaluated",
-            evidence=["esp_flows is empty"],
+            evidence=("esp_flows is empty",),
         )
     pairs = sorted({f"{flow.get('src')} -> {flow.get('dst')}" for flow in flows})
     return Observation(
@@ -80,7 +80,9 @@ def _endpoint_identity(analysis: Mapping[str, Any]) -> Observation:
             f"a passive observer learns that {endpoints[0]} and {endpoints[-1]} run an IPsec tunnel "
             f"({len(pairs)} directional flow(s)); inner addresses stay hidden, outer ones do not"
         ),
-        evidence=[f"esp_flows[{index}].src/dst = {pair}" for index, pair in enumerate(pairs)],
+        evidence=tuple(
+            f"esp_flows[{index}].src/dst = {pair}" for index, pair in enumerate(pairs)
+        ),
         mitigations=(
             "route the tunnel through a concentrator so few outer endpoints carry many tunnels",
             "keep inner space non-routable so leaked flow records identify nothing routable",
@@ -99,7 +101,7 @@ def _sa_identifiers(analysis: Mapping[str, Any]) -> Observation:
             topic="identity",
             exposure="unknown",
             finding="no ESP SPI was recorded, so identifier exposure could not be evaluated",
-            evidence=["esp_flows carries no spi values"],
+            evidence=("esp_flows carries no spi values",),
         )
     spans = [f"SPI {flow.get('spi')}: frames {flow.get('first_frame')}-{flow.get('last_frame')}" for flow in flows]
     return Observation(
@@ -111,7 +113,7 @@ def _sa_identifiers(analysis: Mapping[str, Any]) -> Observation:
             f"{len(spis)} cleartext SPI value(s) label the tunnel for its whole lifetime, letting an "
             "observer stitch packets into one session and follow it across rekey boundaries"
         ),
-        evidence=spans,
+        evidence=tuple(spans),
         mitigations=("rekey often enough that an SPI's useful lifetime is short",),
     )
 
@@ -132,7 +134,7 @@ def _negotiation(analysis: Mapping[str, Any]) -> Observation:
             topic="configuration",
             exposure="unknown",
             finding="no cleartext IKE exchange was captured, so negotiation exposure could not be evaluated",
-            evidence=["ike_exchanges is empty; the negotiation may fall outside this capture window"],
+            evidence=("ike_exchanges is empty; the negotiation may fall outside this capture window",),
             mitigations=("capture the whole SA establishment when the negotiable suite must be assessed",),
         )
     unique = sorted(dict.fromkeys(names))
@@ -146,11 +148,11 @@ def _negotiation(analysis: Mapping[str, Any]) -> Observation:
             f"{', '.join(unique[:6]) or 'no named transforms'}; the ordered transform list fingerprints "
             "the peer's IPsec stack and reveals which legacy algorithms it is willing to accept"
         ),
-        evidence=[
+        evidence=tuple(
             f"ike_exchanges[{index}].{exchange.get('exchange_name')} v{exchange.get('ike_version')} "
             f"ispi={exchange.get('initiator_spi')}"
             for index, exchange in enumerate(exchanges)
-        ],
+        ),
         mitigations=(
             "prefer IKEv2 with a narrow modern proposal list to shrink the fingerprint",
             "stop offering legacy transforms: the offer is visible even when it is never selected",
@@ -168,7 +170,7 @@ def _volume(analysis: Mapping[str, Any]) -> Observation:
             topic="activity",
             exposure="unknown",
             finding="no ESP flow volume was recorded, so activity exposure could not be evaluated",
-            evidence=["esp_flows is empty"],
+            evidence=("esp_flows is empty",),
         )
     total = sum(int(flow.get("bytes_total") or 0) for flow in flows)
     biggest = max(int(flow.get("bytes_total") or 0) for flow in flows)
@@ -182,11 +184,11 @@ def _volume(analysis: Mapping[str, Any]) -> Observation:
             f"carrying {biggest} bytes; packet sizes and burst shape survive encryption and are enough "
             "to profile what the tunnel is being used for"
         ),
-        evidence=[
+        evidence=tuple(
             f"SPI {flow.get('spi')}: {flow.get('packets')} packets, {flow.get('bytes_total')} bytes "
             f"(frames {flow.get('first_frame')}-{flow.get('last_frame')})"
             for flow in flows
-        ],
+        ),
         mitigations=(
             "pad or shape traffic where bandwidth permits",
             "keep one tunnel per purpose so a single flow does not describe a whole site",
@@ -204,7 +206,7 @@ def _cleartext(analysis: Mapping[str, Any]) -> Observation:
             topic="cleartext",
             exposure="unknown",
             finding="the analysis carries no scan summary, so cleartext exposure could not be evaluated",
-            evidence=["details.scan is absent"],
+            evidence=("details.scan is absent",),
         )
     packets = int(scan.get("packets", 0) or 0)
     covered = int(scan.get("esp_packets", 0) or 0) + int(scan.get("ah_packets", 0) or 0)
@@ -224,7 +226,7 @@ def _cleartext(analysis: Mapping[str, Any]) -> Observation:
             f"{outside} of {packets} packet(s) ({share:.0f}%) travel outside the tunnel and are fully "
             "readable; a tunnel protects what carries through it, not what bypasses it"
         ),
-        evidence=parts,
+        evidence=tuple(parts),
         mitigations=(
             "route DNS and management traffic through the tunnel, or encrypt them (DoH, TLS)",
             "confirm capture scope: a tunnel-interface capture shows cleartext that lives on another path",
@@ -244,7 +246,7 @@ def _inference(analysis: Mapping[str, Any], prediction: Mapping[str, Any] | None
                 "no classifier prediction was available, so how much of this traffic is predictable from "
                 "packet-size and timing statistics alone was not measured in this run"
             ),
-            evidence=["traffic stage produced no prediction"],
+            evidence=("traffic stage produced no prediction",),
             mitigations=("train and load a traffic classifier to measure this exposure",),
         )
     klass = str(prediction.get("predicted_class") or "unknown")
@@ -259,7 +261,7 @@ def _inference(analysis: Mapping[str, Any], prediction: Mapping[str, Any] | None
             f"size and timing statistics alone classify this traffic as {klass} with "
             f"{confidence:.0%} confidence ({model_id}); encryption hides content, not behaviour"
         ),
-        evidence=[f"traffic prediction predicted_class={klass} confidence={confidence:.3f} model_id={model_id}"],
+        evidence=(f"traffic prediction predicted_class={klass} confidence={confidence:.3f} model_id={model_id}",),
         mitigations=(
             "constant-size pacing removes the size signal the classifier relies on",
             "treat traffic class as sensitive data while the model stays this confident",

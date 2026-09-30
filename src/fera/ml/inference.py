@@ -411,7 +411,7 @@ def model_status(models_dir: Path | str) -> dict[str, Any]:
         "build_feature_schema": FEATURE_SCHEMA,
     }
     if not listed and not broken:
-        return {"available": False, "reason": "no model artefact found; train one with scripts/train_traffic_model.py", **status}
+        return {"available": False, "reason": "no model artefact found; train one with scripts/train_model.py", **status}
     if not usable:
         if incompatible and not broken:
             reason = f"{incompatible} model(s) found, none built for {FEATURE_SCHEMA}"
@@ -442,7 +442,7 @@ def load_best_model(models_dir: Path | str) -> TrafficModel:
         raise FeraError(
             f"no usable traffic model: {status['reason']}",
             code=ErrorCode.UNAVAILABLE,
-            hint="train a model with scripts/train_traffic_model.py and place it under data/models",
+            hint="train a model with scripts/train_model.py and place it under data/models",
             details={"searched": status["searched"], "errors": status["errors"]},
         )
     for directory in discover_models(models_dir):

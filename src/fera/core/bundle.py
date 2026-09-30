@@ -349,7 +349,7 @@ class AnalysisBundle:
                 "esp_packets": protocol.get("esp_packets"),
                 "esp_flows": len(protocol.get("esp_flows") or ()),
                 "ike_exchanges": len(protocol.get("ike_exchanges") or ()),
-                "pfs_status": pfs_doc.get("status"),
+                "pfs_status": (pfs_doc or {}).get("status"),
             },
             "traffic": None
             if traffic is None

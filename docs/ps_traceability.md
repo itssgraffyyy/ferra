@@ -109,3 +109,23 @@ Nothing here is marked verified on the strength of a synthetic test alone.
 | Security report | `fera.reports` executive + technical, HTML and PDF | CODE VERIFIED |
 | Dataset pipeline | `fera.dataset`, `scripts/build_dataset.py`, `fera.ml.train` | CODE VERIFIED |
 | Technical documentation | `docs/` | CODE VERIFIED |
+
+## Static analysis and test status
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| Unit and integration tests | `python -m pytest tests -q` | 355 passed, 0 failed |
+| Lint | `python -m ruff check .` | All checks passed |
+| Type check | `python -m mypy src` | No issues in 82 source files |
+| Frontend build | `npm run build` (in `frontend/`) | built, 196 kB |
+
+`tests/test_ml_train.py` covers the two guarantees that a passing score would
+otherwise hide: `ablate_feature_sets` never persists a deployable artefact, and
+a feature set that cannot train is recorded as a `blocked` row rather than
+aborting the comparison.
+
+The type checker was previously not part of the reported gates. It is now, and
+it is clean; the fixes it forced were real defects rather than annotation churn:
+a `None` `pfs_doc` that would have raised `AttributeError` on a capture with no
+PFS data, and a `partial` replacing a default-argument lambda that mypy could not
+infer.

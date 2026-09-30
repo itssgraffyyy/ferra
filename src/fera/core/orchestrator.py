@@ -30,6 +30,7 @@ import platform
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
@@ -261,7 +262,7 @@ def _stage_traffic(run: _Run) -> StageResult:
         raise FeraError(
             f"traffic classifier unavailable: {status['reason']}",
             code=ErrorCode.UNAVAILABLE,
-            hint="train a model with scripts/train_traffic_model.py, then restart the API",
+            hint="train a model with scripts/train_model.py, then restart the API",
             details={"searched": status["searched"], "artefacts": status["artefacts"]},
         )
     vector = extract_features(run.capture, outcome=run.outcome)
@@ -351,7 +352,7 @@ def run_analysis(
         use_tshark=use_tshark,
     )
     for name, stage in STAGES:
-        result = _attempt(name, lambda stage=stage: stage(run))
+        result = _attempt(name, partial(stage, run))
         bundle.set_stage(result)
         if not result.available and result.component == "protocol":
             for downstream in ("traffic", "security", "privacy"):

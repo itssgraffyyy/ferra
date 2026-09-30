@@ -109,7 +109,7 @@ def importance_document(
     ]
     totals: dict[str, float] = {}
     for item in features:
-        totals[str(item["group"])] = totals.get(str(item["group"]), 0.0) + float(item["importance"])
+        totals[str(item["group"])] = totals.get(str(item["group"]), 0.0) + float(str(item["importance"]))
     total = sum(totals.values())
     document: dict[str, Any] = {
         "association": ASSOCIATION_LABEL,
