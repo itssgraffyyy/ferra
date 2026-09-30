@@ -23,11 +23,14 @@ When no artefact exists the API and dashboard must show *model unavailable* -
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..analysis.provenance import EvidenceKind
 from ..common.errors import ErrorCode, FeraError
+from ..common.serialization import write_json
 from .features import FEATURE_SCHEMA, FEATURE_WHITELIST, FeatureVector
 
 #: Schema identifier of a ``model.json`` metadata document.
@@ -40,6 +43,18 @@ MODELS_DIRNAME = "models"
 
 #: Prediction document schema, re-exported for product-layer consumers.
 PREDICTION_SCHEMA = "fera_ml_prediction_v1"
+
+#: Evidence grade of every prediction document: a classifier *infers* a class,
+#: it never observes the application behind the ciphertext.
+PREDICTION_EVIDENCE_STATUS = EvidenceKind.INFERRED.value
+
+#: Confidence below which a prediction is flagged ``low_confidence``.  Callers
+#: may override it per prediction; the value used is recorded in the document
+#: so the flag can always be re-derived instead of trusted.
+DEFAULT_CONFIDENCE_THRESHOLD = 0.5
+
+#: Report file the trainer writes beside the artefact (documented layout).
+TRAINING_REPORT_FILE = "training_report.json"
 
 
 @dataclass(frozen=True)
@@ -63,6 +78,9 @@ class TrafficModel:
     notes: tuple[str, ...]
     path: Path
     estimator: Any
+    #: Ordered columns this artefact was trained on (a whitelist subset for an
+    #: ablation model; the runtime refuses to score a vector missing any of them).
+    feature_names: tuple[str, ...] = FEATURE_WHITELIST
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -78,7 +96,7 @@ class TrafficModel:
             "metrics": dict(self.metrics),
             "notes": list(self.notes),
             "path": str(self.path),
-            "feature_names": list(FEATURE_WHITELIST),
+            "feature_names": list(self.feature_names),
         }
 
     def compatible(self) -> bool:
@@ -87,7 +105,7 @@ class TrafficModel:
 
 
     def probabilities(self, vector: FeatureVector) -> dict[str, float]:
-        """Class probabilities for one feature vector, in whitelist order."""
+        """Class probabilities for one feature vector, in trained-column order."""
         if not hasattr(self.estimator, "predict_proba"):
             raise FeraError(
                 f"model {self.model_id} does not expose predict_proba",
@@ -95,7 +113,15 @@ class TrafficModel:
                 hint="train the classifier with a probability-capable estimator",
                 details={"model_id": self.model_id, "algorithm": self.algorithm},
             )
-        row = [vector.features[name] for name in FEATURE_WHITELIST]
+        missing = [name for name in self.feature_names if name not in vector.features]
+        if missing:
+            raise FeraError(
+                f"model {self.model_id} needs columns the vector does not carry",
+                code=ErrorCode.UNSUPPORTED_FEATURE,
+                hint="re-extract features with this checkout's FEATURE_SCHEMA",
+                details={"missing": missing, "feature_schema": self.feature_schema},
+            )
+        row = [vector.features[name] for name in self.feature_names]
         scores = list(self.estimator.predict_proba([row])[0])
         declared = getattr(self.estimator, "classes_", None)
         ordered = (
@@ -109,14 +135,31 @@ class TrafficModel:
             )
         return {name: round(float(score), 6) for name, score in zip(ordered, scores, strict=True)}
 
-    def predict(self, vector: FeatureVector) -> dict[str, Any]:
-        """Prediction document in ``fera_ml_prediction_v1`` shape."""
+    def predict(
+        self,
+        vector: FeatureVector,
+        *,
+        confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+    ) -> dict[str, Any]:
+        """Prediction document in ``fera_ml_prediction_v1`` shape.
+
+        ``confidence_threshold`` (0 to 1, recorded in the document) decides the
+        ``low_confidence`` flag; it never alters the class or the confidence
+        themselves - downstream stages must be able to re-derive the flag from
+        the recorded threshold rather than trust a boolean they cannot check.
+        """
         if not self.compatible():
             raise FeraError(
                 f"model {self.model_id} was trained on {self.feature_schema}, this build emits {FEATURE_SCHEMA}",
                 code=ErrorCode.UNSUPPORTED_FEATURE,
                 hint="retrain the model against this checkout, or pin the matching release",
                 details={"model_schema": self.feature_schema, "build_schema": FEATURE_SCHEMA},
+            )
+        if not 0.0 <= confidence_threshold <= 1.0:
+            raise FeraError(
+                f"confidence_threshold must be within [0, 1] (got {confidence_threshold})",
+                code=ErrorCode.CONFIG_VALIDATION_FAILED,
+                details={"confidence_threshold": confidence_threshold},
             )
         probabilities = self.probabilities(vector)
         predicted, confidence = max(probabilities.items(), key=lambda item: (item[1], item[0]))
@@ -125,6 +168,9 @@ class TrafficModel:
             "predicted_class": predicted,
             "confidence": confidence,
             "probabilities": probabilities,
+            "evidence_status": PREDICTION_EVIDENCE_STATUS,
+            "low_confidence": bool(confidence < confidence_threshold),
+            "confidence_threshold": float(confidence_threshold),
             "model_id": self.model_id,
             "model_version": self.model_version,
             "feature_schema": self.feature_schema,
@@ -184,6 +230,37 @@ def read_model_metadata(directory: Path) -> dict[str, Any]:
             code=ErrorCode.CONFIG_VALIDATION_FAILED,
             details={"path": str(metadata_path)},
         )
+    raw_features = document.get("feature_names")
+    if raw_features is not None:
+        if not isinstance(raw_features, list) or not raw_features:
+            raise FeraError(
+                f"{metadata_path} must list the ordered feature_names it was trained on",
+                code=ErrorCode.CONFIG_VALIDATION_FAILED,
+                details={"path": str(metadata_path)},
+            )
+        ordered = tuple(str(name) for name in raw_features)
+        unknown = [name for name in ordered if name not in set(FEATURE_WHITELIST)]
+        if unknown:
+            raise FeraError(
+                f"{metadata_path} names columns outside this checkout's feature whitelist",
+                code=ErrorCode.UNSUPPORTED_FEATURE,
+                hint="retrain the model against this checkout, or pin the matching release",
+                details={"unknown": unknown, "path": str(metadata_path)},
+            )
+        if len(set(ordered)) != len(ordered):
+            raise FeraError(
+                f"{metadata_path} repeats a feature name",
+                code=ErrorCode.CONFIG_VALIDATION_FAILED,
+                details={"path": str(metadata_path)},
+            )
+        canonical = tuple(name for name in FEATURE_WHITELIST if name in set(ordered))
+        if canonical != ordered:
+            raise FeraError(
+                f"{metadata_path} feature_names are not in whitelist order",
+                code=ErrorCode.CONFIG_VALIDATION_FAILED,
+                hint="order the columns exactly like FEATURE_WHITELIST",
+                details={"path": str(metadata_path), "expected": list(canonical)},
+            )
     return document
 
 
@@ -200,6 +277,10 @@ def load_model(directory: Path | str) -> TrafficModel:
             details={"path": str(estimator_path)},
         )
     estimator = _require_joblib().load(estimator_path)
+    raw_features = document.get("feature_names")
+    feature_names = (
+        tuple(str(name) for name in raw_features) if raw_features else tuple(FEATURE_WHITELIST)
+    )
     return TrafficModel(
         model_id=str(document.get("model_id") or root.name),
         model_version=str(document.get("model_version") or "unknown"),
@@ -212,7 +293,61 @@ def load_model(directory: Path | str) -> TrafficModel:
         notes=tuple(str(item) for item in (document.get("notes") or ())),
         path=root,
         estimator=estimator,
+        feature_names=feature_names,
     )
+
+
+def write_model(
+    directory: Path | str,
+    estimator: Any,
+    metadata: Mapping[str, Any],
+    *,
+    report: Mapping[str, Any] | None = None,
+) -> dict[str, Path]:
+    """Persist one artefact directory (payload first, metadata last).
+
+    Order matters: discovery keys off ``model.json``, so writing it last means a
+    crash mid-write leaves a payload without metadata (ignored by the scanner)
+    rather than metadata promising a payload that never landed (which would make
+    *every* status check say "broken artefact").
+
+    The metadata is validated before a single byte is written: refusing to save
+    an unloadable artefact is cheap now and expensive later.
+    """
+    document = dict(metadata)
+    if document.get("schema") != MODEL_SCHEMA:
+        raise FeraError(
+            f"refusing to write a model without the {MODEL_SCHEMA} schema",
+            code=ErrorCode.CONFIG_VALIDATION_FAILED,
+            details={"schema": document.get("schema")},
+        )
+    classes = document.get("classes")
+    if not isinstance(classes, list) or not classes:
+        raise FeraError(
+            "refusing to write a model with no class list",
+            code=ErrorCode.CONFIG_VALIDATION_FAILED,
+            details={"classes": classes},
+        )
+    feature_names = tuple(str(name) for name in document.get("feature_names") or FEATURE_WHITELIST)
+    unknown = [name for name in feature_names if name not in set(FEATURE_WHITELIST)]
+    if unknown or len(set(feature_names)) != len(feature_names):
+        raise FeraError(
+            "refusing to write a model with columns outside the feature whitelist",
+            code=ErrorCode.CONFIG_VALIDATION_FAILED,
+            details={"unknown": unknown, "feature_names": list(feature_names)},
+        )
+    document["feature_names"] = list(feature_names)
+    document.setdefault("feature_schema", FEATURE_SCHEMA)
+
+    target = Path(directory)
+    target.mkdir(parents=True, exist_ok=True)
+    payload = target / MODEL_ESTIMATOR_FILE
+    _require_joblib().dump(estimator, payload)
+    written = {"estimator": payload}
+    if report is not None:
+        written["report"] = write_json(target / TRAINING_REPORT_FILE, dict(report))
+    written["metadata"] = write_json(target / MODEL_METADATA_FILE, document)
+    return written
 
 
 def discover_models(models_dir: Path | str) -> list[Path]:
@@ -324,20 +459,29 @@ def load_best_model(models_dir: Path | str) -> TrafficModel:
     )
 
 
-def predict_capture(pcap_path: Path | str, models_dir: Path | str, *, outcome: Any = None) -> dict[str, Any]:
+def predict_capture(
+    pcap_path: Path | str,
+    models_dir: Path | str,
+    *,
+    outcome: Any = None,
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+) -> dict[str, Any]:
     """Bridge one capture to a prediction document (features, then model)."""
     from .features import extract_features
 
     vector = extract_features(pcap_path, outcome=outcome)
-    return load_best_model(models_dir).predict(vector)
+    return load_best_model(models_dir).predict(vector, confidence_threshold=confidence_threshold)
 
 
 __all__ = [
+    "DEFAULT_CONFIDENCE_THRESHOLD",
     "MODEL_SCHEMA",
     "MODEL_METADATA_FILE",
     "MODEL_ESTIMATOR_FILE",
     "MODELS_DIRNAME",
+    "PREDICTION_EVIDENCE_STATUS",
     "PREDICTION_SCHEMA",
+    "TRAINING_REPORT_FILE",
     "TrafficModel",
     "discover_models",
     "load_best_model",
@@ -345,5 +489,6 @@ __all__ = [
     "model_status",
     "predict_capture",
     "read_model_metadata",
+    "write_model",
 ]
 
