@@ -116,7 +116,22 @@ class ProjectPaths:
     def logs(self) -> Path:
         return self.data / "logs"
 
-        # -- helpers -------------------------------------------------------
+    @property
+    def bundles(self) -> Path:
+        """Archive of completed analysis bundles (the product history)."""
+        return self.data / "bundles"
+
+    @property
+    def uploads(self) -> Path:
+        """Staging area for captures uploaded through the API."""
+        return self.data / "uploads"
+
+    @property
+    def models(self) -> Path:
+        """Directory searched for operator-trained traffic classifier artefacts."""
+        return self.data / "models"
+
+    # -- helpers ---------------------------------------------------------
     def ensure_runtime_dirs(self) -> None:
         """Create the directories the pipeline writes to."""
         for directory in (
@@ -124,6 +139,8 @@ class ProjectPaths:
             self.processed,
             self.manifests,
             self.logs,
+            self.bundles,
+            self.uploads,
             self.experiments_dir,
             self.templates_dir,
         ):

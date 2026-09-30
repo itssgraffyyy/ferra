@@ -28,6 +28,17 @@ data/logs/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/logs/.gitkeep
+
+# API runtime data: uploaded captures, analysis bundles, operator-trained models.
+# Never commit these - they carry other people's traffic.
+data/uploads/*
+data/bundles/*
+data/models/*
+data/tmp/*
+!data/uploads/.gitkeep
+!data/bundles/.gitkeep
+!data/models/.gitkeep
+
 # generated manifest & reports are reproducible artefacts
 data/manifests/*.json
 data/manifests/*.txt

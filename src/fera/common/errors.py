@@ -37,6 +37,15 @@ class ErrorCode(str, Enum):
     TIMEOUT = "TIMEOUT"
     IO_ERROR = "IO_ERROR"
     INTERNAL_ERROR = "INTERNAL_ERROR"
+    # Product-layer codes (Prompt 5): a stage that cannot run in this
+    # environment is reported as UNAVAILABLE, which is deliberately different
+    # from a crash, and API lookups need an explicit NOT_FOUND.
+    UNAVAILABLE = "UNAVAILABLE"
+    NOT_FOUND = "NOT_FOUND"
+    PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
+    UNSUPPORTED_CONTENT = "UNSUPPORTED_CONTENT"
+    CAPTURE_IN_PROGRESS = "CAPTURE_IN_PROGRESS"
+
 
 
 class FeraError(Exception):
