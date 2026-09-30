@@ -23,6 +23,59 @@ analysis, ML, and security assessment stages.
   * Unix domain sockets across `/mnt/c` mounts are not supported by the Linux kernel; VICI runtime sockets must reside on native Linux mounts (e.g. `/run` or `/tmp`).
   * Run `scripts/check_environment.py` inside WSL to probe kernel XFRM capabilities before executing real experiments.
 
+### Observed on the development host (2026-09-30): WSL2 unusable, Linux validation BLOCKED
+
+A continuation attempt to close the real strongSwan ESP data path could not
+reach a Linux environment at all. This is recorded verbatim so the blocker is
+not mistaken for a code defect and is not quietly forgotten.
+
+Host facts:
+
+| Item | Observed value |
+|---|---|
+| OS | Microsoft Windows 11 Home Single Language, 10.0.26100 |
+| `HypervisorPresent` | `True` |
+| `VirtualizationFirmwareEnabled` | **`False`** (nested virtualisation unavailable) |
+| WSL distributions registered | `Ubuntu-22.04` (WSL2) |
+| WSL service | `WslService` — Running, Automatic |
+
+`scripts/check_environment.py` on this host reports
+`NOT READY — blocking=5`: OS/platform `UNSUPPORTED`, privileges `UNSUPPORTED`,
+Kernel XFRM/IPsec `UNSUPPORTED`, network namespaces `UNSUPPORTED`, and
+`swanctl` / `tcpdump` / `dumpcap` / `iperf3` / `ip` all `MISSING`. That is the
+expected and correct answer for Windows.
+
+The WSL2 route was then attempted and failed. Every one of these commands hung
+indefinitely and had to be killed, including commands that cannot touch IPsec at
+all:
+
+| Attempt | Command | Result |
+|---|---|---|
+| 1 | `wsl -l -v` | lists `Ubuntu-22.04`, `docker-desktop`, `docker-desktop-data` (all Stopped) |
+| 2 | `wsl -d Ubuntu-22.04 -e uname -a` | no output, hung |
+| 3 | `wsl -d Ubuntu-22.04 -e swanctl --version` | no output, hung |
+| 4 | `wsl -d Ubuntu-22.04 -e cat /etc/os-release` | no output, hung |
+| 5 | bounded 45 s `Start-Process` + `WaitForExit` on `cat /etc/os-release` | **`TIMEOUT_HUNG`**, process killed |
+| 6 | `wsl --shutdown` | hung |
+| 7 | `Restart-Service WslService -Force` (service returned `Running`) | service up, distro still hung |
+| 8 | `wsl --terminate Ubuntu-22.04` | `TERM_EXIT=0` |
+| 9 | bounded 75 s `sh -c 'uname -a; command -v swanctl tcpdump ip; swanctl --version; ip xfrm state'` after #8 | **`TIMEOUT_HUNG`**, process killed |
+
+`VirtualizationFirmwareEnabled=False` with `HypervisorPresent=True` indicates
+this host is itself a guest without nested virtualisation, so the WSL2 utility
+VM cannot be started. Ten `wsl.exe` processes were observed alive with ~0 CPU,
+i.e. blocked on VM start rather than doing work.
+
+**Consequence.** No Linux kernel, no `strongSwan`, no XFRM and no privileged
+capture were reachable in this session. Per the environment-blocker policy, no
+synthetic PCAPs were generated to stand in for the missing real captures, and no
+ESP/dataset/model/accuracy result is claimed anywhere as a consequence. The
+stages listed in `docs/ps_traceability.md` as `ENVIRONMENT VALIDATION PENDING`
+remain pending, and the native-Linux procedure that unblocks them is already
+written up in `docs/testbed.md` (namespace and two-VM topologies) and
+`docs/demo_guide.md` (end-to-end run order). Re-run
+`python scripts/check_environment.py` on that machine before trusting any of it.
+
 ### Windows / macOS Native
 * **Status**: Development, Dry-Run, and Validation Only.
 * **Limitations**:
