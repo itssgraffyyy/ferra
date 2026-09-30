@@ -33,6 +33,12 @@ IKEV1_MAJOR = 1
 PAYLOAD_SA = 33
 PAYLOAD_NONE = 0
 
+#: IANA-assigned IKEv2 exchange types (RFC 7296 s3.10 and the IANA registry).
+#: An exchange type outside this set means the bytes are not a real IKEv2
+#: header - most often ESP-encrypted IKE arriving on UDP/4500, where the first
+#: encrypted byte run can imitate the version/exchange-type nibbles.
+_IKEV2_ASSIGNED_EXCHANGES = frozenset(range(34, 42))
+
 
 def _u16(data: bytes, offset: int) -> int | None:
     if len(data) < offset + 2:
@@ -260,11 +266,23 @@ def _walk_payloads(first_type: int, body: bytes) -> tuple[tuple[int, ...], list[
 
 
 def parse_ike_message(frame_index: int, udp_payload: bytes) -> IkeExchangeRecord | None:
-    """Parse one UDP payload as IKE; None when not parseable."""
+    """Parse one UDP payload as IKE; None when not parseable.
+
+    A payload that merely *looks* like an IKEv2 header is not enough.  On
+    UDP/4500 the bytes after the NON-ESP marker are usually ESP-encrypted, and
+    any random 4-byte run has a 1-in-16 chance of carrying major version 2 in
+    the right nibble.  Treating that as a decoded exchange invents a message id
+    and an exchange type that never existed, so a real strongSwan capture
+    reported fabricated ``UNKNOWN_EXCHANGE_177`` rows.
+
+    Reject anything whose exchange type is not an IANA-assigned IKEv2 value
+    (34-41) or which is an IKEv2 message with a non-zero responder SPI outside
+    IKE_SA_INIT.  Returning None means "not decodable", which is honest.
+    """
     if len(udp_payload) < IKE_HEADER_LEN:
         return None
-    initiator_spi = udp_payload[0:8].hex()
-    responder_spi = udp_payload[8:16].hex()
+    initiator_spi = udp_payload[0:8]
+    responder_spi = udp_payload[8:16]
     next_payload = udp_payload[16]
     major = udp_payload[17] >> 4
     exchange_type = udp_payload[18]
@@ -273,16 +291,21 @@ def parse_ike_message(frame_index: int, udp_payload: bytes) -> IkeExchangeRecord
     length = _u32(udp_payload, 24)
     if message_id is None or length is None:
         return None
-    if length >= IKE_HEADER_LEN and length <= len(udp_payload):
-        body = udp_payload[IKE_HEADER_LEN:length]
-    else:
-        body = udp_payload[IKE_HEADER_LEN:]
     if major == IKEV2_MAJOR:
+        if exchange_type not in _IKEV2_ASSIGNED_EXCHANGES:
+            return None
+        # RFC 7296: only IKE_SA_INIT carries a zero responder SPI.
+        if exchange_type != int(IkeExchangeType.IKE_SA_INIT) and not any(responder_spi):
+            return None
         exchange_name = IkeExchangeType.describe(exchange_type)
     elif major == IKEV1_MAJOR:
         exchange_name = f"IKEV1_EXCHANGE_{exchange_type}"
     else:
         return None
+    if length >= IKE_HEADER_LEN and length <= len(udp_payload):
+        body = udp_payload[IKE_HEADER_LEN:length]
+    else:
+        body = udp_payload[IKE_HEADER_LEN:]
     payload_types, proposals = _walk_payloads(next_payload, body)
     return IkeExchangeRecord(
         frame_index=frame_index,
@@ -292,8 +315,8 @@ def parse_ike_message(frame_index: int, udp_payload: bytes) -> IkeExchangeRecord
         initiator=bool(flags & 0x08),
         response=bool(flags & 0x20),
         message_id=message_id,
-        initiator_spi=initiator_spi,
-        responder_spi=responder_spi,
+        initiator_spi=initiator_spi.hex(),
+        responder_spi=responder_spi.hex(),
         proposals=tuple(proposals),
         payload_types=payload_types,
     )
