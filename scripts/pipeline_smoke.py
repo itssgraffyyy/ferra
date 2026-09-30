@@ -17,7 +17,6 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from analysis_smoke import build  # noqa: E402
-
 from fera.common.errors import ErrorCode, FeraError  # noqa: E402
 from fera.core.bundle import AnalysisBundle  # noqa: E402
 from fera.core.orchestrator import CaptureSource, run_analysis  # noqa: E402

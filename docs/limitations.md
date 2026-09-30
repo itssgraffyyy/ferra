@@ -73,20 +73,89 @@ and risk bands are a curated opinion encoded once, in `fera.security.policy`.
 `scripts/generate_security_policy_docs.py`; edit the tables, never the document.
 
 ### ML stage limits
-* **No trained model ships with the repository.**  `fera.ml` is the feature
-  contract (`FEATURE_WHITELIST`, `FEATURE_SCHEMA`) and the labelled dataset
-  factory; there is no trainer, no evaluation harness, and therefore no accuracy
-  claim anywhere in this repository.
+* **No trained model is committed.**  `fera.ml` ships the feature contract
+  (`FEATURE_WHITELIST`, `FEATURE_SCHEMA`), the labelled dataset factory, and
+  the trainer (`fera.ml.train`, `scripts/train_model.py`).  Model binaries are
+  gitignored because they are large, environment-specific, and not source.
+  Until one is trained, the product reports the traffic stage as `UNAVAILABLE`
+  with a reason; it never substitutes a default class.
+* **A training run that could not be measured says so.**  When the split
+  produces no usable test block, the training report carries
+  `performance_status != MEASURED` and prepends an explicit note to the model
+  metadata, so an unverified model cannot be read as a performance claim.
 * Features describe traffic *behaviour* only - counts, sizes, timing, direction
   split.  Payload content, configuration values, and labels never enter a
   feature vector, and non-finite values are rejected instead of clipped.
 * Splits are grouped by experiment id, so near-duplicate captures of one run
-  cannot straddle a train/test boundary and inflate a reported accuracy.
+  cannot straddle a train/test boundary and inflate a reported accuracy.  The
+  exact group keys per split are recorded in the training report as a leakage
+  audit trail.
+* Selection uses validation macro-F1 only; the test block is opened once, after
+  the winner exists.
+* **Shortcut risk is measured, not assumed.**  `ablate_feature_sets` re-runs the
+  whole pipeline per feature set with split, seed and candidates held constant.
+  A full-set score far above `esp_core` is reported as a caution that the model
+  may be reading the harness rather than the traffic.
 * A classifier result reaches the assessment only as a `fera_ml_prediction_v1`
   document, is graded `INFERRED`, and its confidence is reported as the
   surprisal it claims (`-log2(confidence)`) rather than as a probability of
   correctness.  Missing model identity is reported, not silently accepted, and a
-  labelled sample passed off as a prediction is refused.
+  labelled sample passed off as a prediction is refused.  In the product path a
+  classifier never observes the app behind the ciphertext, so its output is
+  `INFERRED` by construction.
+
+## Product Layer Boundaries
+
+### What the dashboard does not do
+The React frontend renders the canonical bundle and nothing else.  It does not
+parse packets, recompute a security score, re-derive a threat, or interpret a
+finding.  Every badge, score and matrix cell it displays is a value the backend
+produced.  This is what stops a UI and a report from disagreeing.
+
+### Live capture is unverified in this environment
+`fera.capture.live` shells out to `tcpdump`/`dumpcap` with an argument list
+(never `shell=True`), bounded to 10s by default and 60s maximum, and feeds the
+result into the same orchestrator as an upload.  The subprocess boundary is
+unit-tested with a fake runner - command construction, invalid duration,
+invalid interface, missing tool, permission failure, timeout, cleanup.
+
+**A real privileged capture has not been executed on the machine this was
+developed on (Windows).**  To validate on Linux:
+
+```bash
+sudo apt-get install tcpdump
+sudo setcap cap_net_raw,cap_net_admin=eip $(which tcpdump)
+python scripts/check_environment.py            # confirms the tool and privileges
+curl http://localhost:8000/capabilities        # live_capture should be "available"
+curl -X POST http://localhost:8000/live/analyze \
+  -H 'content-type: application/json' -d '{"interface":"eth0","duration_s":10}'
+```
+
+Until that is done, treat live capture as `IMPLEMENTED — ENVIRONMENT
+VALIDATION PENDING`.  The unit tests prove the code builds the right command
+and handles each failure; they do not prove a packet was ever captured.
+
+### PDF export is optional
+PDF rendering uses `reportlab`, which is not a required dependency.  Without it
+the API serves HTML reports and `/capabilities` reports `report_generation`
+with a `pdf_reason`.  HTML export needs no extra package.
+
+### IPv6 is not analysed at IPv4 depth
+IPv6 packets are parsed and counted, but the deep IKE/ESP field extraction,
+flow statistics, and feature coverage are not at parity with IPv4.  Surfaces
+show only what the analyser actually extracts rather than implying parity.
+This is a known, separate Prompt 2 repair - see `docs/ps_traceability.md`.
+
+### Upload safety
+Uploads are size-limited, extension- and magic-checked, and stored under a
+generated name; the user-supplied filename is displayed but never used as a
+filesystem path, so a traversal-style name cannot escape the upload directory.
+No shell command is ever built from user input.
+
+### History is a cache, not a second truth
+SQLite (`data/fera.db`) holds summary columns for listing and filtering.  The
+canonical bundle document remains authoritative: reopening an analysis returns
+the stored bundle and does not re-run any stage.
 
 ### Ground truth isolation
 Ground truth enters the pipeline in exactly one place: `fera.ml.dataset`, which

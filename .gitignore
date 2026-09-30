@@ -21,6 +21,11 @@ coverage.xml
 Thumbs.db
 desktop.ini
 
+# Node / frontend
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+
 # FERA generated data (directories are kept so the layout exists in a checkout)
 data/raw/*
 data/processed/*
@@ -38,6 +43,12 @@ data/tmp/*
 !data/uploads/.gitkeep
 !data/bundles/.gitkeep
 !data/models/.gitkeep
+
+# Local SQLite analysis history. Re-creatable; contents are derived from bundles.
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
 
 # generated manifest & reports are reproducible artefacts
 data/manifests/*.json

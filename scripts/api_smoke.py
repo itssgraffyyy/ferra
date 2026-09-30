@@ -17,9 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from analysis_smoke import build  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from analysis_smoke import build  # noqa: E402
 from fera.api.main import create_app  # noqa: E402
 
 CAPTURE = ROOT / "data" / "tmp" / "smoke_ipsec.pcap"

@@ -37,10 +37,46 @@ src/fera/
 ├── dataset/            # Schema validation, representative matrix, ground truth, manifest, runner
 ├── analysis/           # Deterministic IKEv2 / ESP decoding, SA correlation, ESP flow statistics,
 │                       # evidence provenance, optional tshark cross-check
-├── ml/                 # Feature extraction from analysis output, labelled dataset with grouped splits
-└── security/           # Generated policy tables, rule catalogue, evidence grading, scoring,
-                        # threat matrix, assessment model
+├── ml/                 # Feature extraction, labelled dataset with grouped splits,
+│                       # trainer, inference, feature-set ablation
+├── security/           # Generated policy tables, rule catalogue, evidence grading, scoring,
+│                       # threat matrix, assessment model
+├── privacy/            # Metadata exposure observer
+├── core/               # Capture-to-bundle orchestration; the canonical analysis bundle
+├── storage/            # SQLite analysis history (summary rows; the bundle stays authoritative)
+├── reports/            # Deterministic executive / technical reports; HTML and PDF rendering
+└── api/                # FastAPI product service
 ```
+
+### Product flow
+
+```
+PCAP upload  OR  bounded live capture (fera.capture.live)
+                 │
+                 ▼
+            CaptureSource
+                 │
+                 ▼
+   fera.core.orchestrator.run_analysis()
+                 │
+   ┌─────────────┼─────────────┬──────────────┐
+   ▼             ▼             ▼              ▼
+ protocol      ML inference  security      privacy
+ (analysis)    (INFERRED)    assessment    observer
+   └─────────────┴─────────────┴──────────────┘
+                 │
+                 ▼
+      CANONICAL ANALYSIS BUNDLE  ← the single source of truth
+                 │
+        ┌────────┼────────┬─────────────┐
+        ▼        ▼        ▼             ▼
+    dashboard  reports  SQLite      JSON export
+```
+
+Every downstream surface reads that one document. The frontend renders bundle
+fields; it never recomputes a score, a threat, or a protocol fact. Reports are
+rendered from the stored bundle without re-running any stage, which is what
+guarantees a report cannot claim evidence the analysis does not have.
 
 ### 1. `fera.common`
 * **Errors & Codes (`errors.py`)**: Structured `FeraError` exception hierarchy tagged with canonical `ErrorCode` enums and actionable remediation hints.

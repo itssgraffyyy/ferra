@@ -1,24 +1,38 @@
 # FERA — IPsec VPN Protocol Analysis and Security Assessment Platform
 
-**Current repository state: IPsec testbed + dataset factory + protocol analysis +
-labelled ML dataset + evidence-graded security assessment.**
+**Current repository state: complete offline product — capture → analyse →
+classify → assess → explain → store → visualise → report.**
 
 The pipeline is reproducible end to end:
 
 ```
-experiment configuration  →  strongSwan IPsec configuration  →  establish VPN
-        →  generate labelled traffic  →  capture packets
-        →  PCAP + ground truth + manifest
-        →  deterministic IKEv2 / ESP analysis        (fera.analysis)
-        →  statistical features + labelled dataset   (fera.ml)
-        →  findings, threat matrix, security score   (fera.security)
+PCAP upload  OR  bounded live capture
+                 │
+                 ▼
+           CaptureSource
+                 │
+                 ▼
+      capture → protocol analysis   (fera.analysis — deterministic IKEv2/ESP)
+                 → ML inference       (fera.ml — classifier, INFERRED)
+                 → security assessment(fera.security — score, findings, threats)
+                 → privacy observation(fera.privacy — metadata exposure)
+                 │
+                 ▼
+      CANONICAL ANALYSIS BUNDLE     (fera.core — one schema, one source of truth)
+                 │
+       ┌─────────┼─────────┐
+       ▼         ▼         ▼
+  Dashboard   Reports   SQLite history
+  (frontend)  (PDF/HTML/JSON)
 ```
 
-Ground truth stops at the dataset boundary.  The analysis and security stages
+Ground truth stops at the dataset boundary. The analysis and security stages
 read the capture (plus, optionally, the testbed's own configuration and a
 classifier prediction document) and never the answer key, so a security score
-can never be steered by a label.  The product API, dashboard and rendered
-report builders are **not** part of this repository state.
+can never be steered by a label.
+
+The dashboard, reports, persistence and exports all consume the canonical
+bundle. None of them recomputes a protocol fact or a security score.
 
 ---
 
@@ -50,7 +64,30 @@ Everything except `swanctl`/`tcpdump` is optional; FERA reports what is missing
 and either falls back (e.g. its own PCAP scanner instead of tshark) or fails
 explicitly.  See `docs/limitations.md`.
 
-## Quick start
+## Quick start — the product
+
+```bash
+# 1. Backend (product API)
+python -m pip install fastapi uvicorn python-multipart
+python -m uvicorn fera.api.main:app --port 8000
+
+#    Ask what this installation can actually do, and why not more:
+curl http://localhost:8000/capabilities
+
+# 2. Dashboard
+cd frontend && npm install && npm run dev
+
+# 3. Analyse a capture (or use the Analyze view)
+curl -F "file=@capture.pcap" http://localhost:8000/analyze
+
+# 4. Reports and history
+curl "http://localhost:8000/analyses/<id>/report?type=executive&format=html"
+curl http://localhost:8000/analyses
+```
+
+Full walkthrough: `docs/user_guide.md`, `docs/demo_guide.md`.
+
+## Quick start — building the dataset
 
 ```bash
 # 1. What can this machine do?  (never claims a testbed works without probing it)
@@ -70,6 +107,10 @@ python scripts/validate_capture.py --pcap data/raw/exp_000_*/capture.pcap
 
 # 5. Labelled ML dataset (features + ground truth, grouped train/val/test splits)
 python scripts/build_dataset.py
+
+# 5b. Train the traffic classifier (nothing is committed — you train it)
+python scripts/train_model.py
+python scripts/train_model.py --ablate      # feature-set / shortcut-risk ablation
 
 # 6. Security assessment of one capture: analysis -> rules -> score
 python scripts/assess_security.py --pcap data/raw/exp_000_*/capture.pcap
@@ -128,8 +169,14 @@ python scripts/run_experiment.py --config configs/experiments/exp_000_*.yaml --d
 | `fera.analysis` | PCAP to structured IKEv2/ESP observations (exchanges, proposals, SAs, ESP flows), each carrying its own evidence grade |
 | `fera.ml` | versioned feature extraction from the analysis output, labelled dataset with grouped train/val/test splits |
 | `fera.security` | generated policy tables, rule catalogue, evidence grading, scoring, threat matrix, assessment report |
+| `fera.core` | capture-to-bundle orchestration and the canonical analysis result (one schema) |
+| `fera.storage` | SQLite analysis history — summary rows for listing; the bundle stays authoritative |
+| `fera.reports` | deterministic executive / technical reports, HTML and PDF, rendered from the stored bundle |
+| `fera.privacy` | metadata exposure observer |
+| `fera.api` | FastAPI product service: analyze, history, export, reports, model status, capabilities |
 
-Details: `docs/architecture.md`, `docs/testbed.md`, `docs/experiment_matrix.md`,
+Details: `docs/architecture.md`, `docs/user_guide.md`, `docs/demo_guide.md`,
+`docs/ps_traceability.md`, `docs/testbed.md`, `docs/experiment_matrix.md`,
 `docs/limitations.md`, `docs/ipsec_correctness.md`, `docs/security_baseline.md`.
 
 ---
@@ -156,5 +203,8 @@ python -m mypy
 - **Resilient Execution Controls**: Redacts credentials in logs, isolates namespace runtime sockets on local paths, and generates structured failure artifacts upon unhandled execution events.
 - **Evidence-Graded Analysis And Assessment**: Every analytical statement carries an evidence grade (`OBSERVED` / `INFERRED` / `NOT_VERIFIABLE` in the analyser, `OBSERVED` / `CONFIGURED` / `INFERRED` / `NOT_VERIFIABLE` in the assessment); a property a passive capture cannot decide lowers evidence coverage instead of moving the score.
 - **Ground Truth Isolation**: ground truth is read by exactly one module (`fera.ml.dataset`); `extract_features` accepts no label or configuration input, the security stage refuses a labelled sample presented as a prediction, and the configuration channel reads only fixed algorithm keys, so no score can be derived from the answer key.
-- **No Trained Model Ships With The Repository**: the ML stage is the feature contract plus the labelled dataset factory; classifier output enters the assessment only through the `fera.security.ml_contract` document format and is graded `INFERRED` there.
+- **A Trained Model Is Not Committed**: the repository ships the *trainer* (`fera.ml.train`), not a model binary. Until you train one, the traffic stage reports `UNAVAILABLE` with a reason and every other stage stays fully usable — no fallback class, no hard-coded prediction. Train with `python scripts/train_model.py`; the API discovers whatever is in `data/models/`.
+- **Honest Unavailability**: `/capabilities`, `/models/status` and the dashboard all distinguish *present*, *absent*, and *present but unverifiable*. A missing tshark, a missing capture tool, or a missing model is reported with a reason, never papered over.
+- **One Source Of Truth**: the canonical analysis bundle is the only result document. Dashboard, reports, exports and history all read it; none of them re-runs analysis or recomputes a score.
+- **Offline-First**: after local dependencies are installed, the entire analysis path — parsing, features, inference, assessment, privacy, persistence, API, dashboard, reports — runs with no network access. No cloud services, no LLM, no telemetry.
 
