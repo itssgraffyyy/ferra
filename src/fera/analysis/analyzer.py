@@ -13,6 +13,9 @@ from ..capture.pcap_scan import (
     ETHERTYPE_QINQ,
     ETHERTYPE_VLAN,
     LINKTYPE_ETHERNET,
+    LINKTYPE_LINUX_SLL,
+    LINKTYPE_LINUX_SLL2,
+    LINKTYPE_NULL,
     LINKTYPE_RAW,
     _ipv6_payload_offset_and_protocol,
     scan_pcap,
@@ -30,8 +33,17 @@ IPPROTO_AH = 51
 ETHERTYPE_VLAN_IP = ETHERTYPE_VLAN
 ETHERTYPE_QINQ_IP = ETHERTYPE_QINQ
 
-#: Fixed IPv6 header length (RFC 8200): 40 bytes, no IHL field and no options.
+#: IPv6 header length (RFC 8200): 40 bytes, no IHL field and no options.
 IPV6_HEADER_BYTES = 40
+
+#: Linux "cooked" capture headers.  tcpdump writing to "any" on Linux produces
+#: these, not Ethernet, so a capture taken on the box under test has no ethertype
+#: at offset 12 at all.  SLL2 (linktype 276) puts the protocol in the first two
+#: bytes and has a fixed 20-byte header; SLL (113) keeps a 16-byte header with
+#: the protocol at offset 14.  Both are captured on the same host as the tunnel,
+#: so ignoring them means the real validation capture analyses as empty.
+SLL2_HEADER_BYTES = 20
+SLL_HEADER_BYTES = 16
 
 
 @dataclass
@@ -160,9 +172,31 @@ def _frame_ip(frame: bytes, linktype: int | None) -> bytes | None:
     link layer: dropping 0x86DD here made every IPv6 capture look like a
     capture with no IPsec in it, which reads as "no tunnel" rather than
     "not analysed".
+
+    Linux cooked captures (SLL/SLL2) are handled because that is what tcpdump
+    writes when capturing "any" on the tunnel host itself.  Falling through to
+    the Ethernet default there would strip 14 bytes of a 20-byte header and
+    yield a parse failure, so a real capture would silently report zero IKE.
     """
     if linktype == LINKTYPE_RAW:
         return frame
+    if linktype == LINKTYPE_LINUX_SLL2:
+        if len(frame) < SLL2_HEADER_BYTES:
+            return None
+        # SLL2 puts the protocol field first, ahead of the 20-byte header.
+        protocol = struct.unpack_from("!H", frame, 0)[0]
+        return frame[SLL2_HEADER_BYTES:] if protocol in (ETHERTYPE_IPV4, ETHERTYPE_IPV6) else None
+    if linktype == LINKTYPE_LINUX_SLL:
+        if len(frame) < SLL_HEADER_BYTES:
+            return None
+        protocol = struct.unpack_from("!H", frame, 14)[0]
+        return frame[SLL_HEADER_BYTES:] if protocol in (ETHERTYPE_IPV4, ETHERTYPE_IPV6) else None
+    if linktype == LINKTYPE_NULL:
+        # BSD loopback: a 4-byte address-family field then the IP packet.
+        if len(frame) < 4:
+            return None
+        family = struct.unpack_from("=I", frame, 0)[0]
+        return frame[4:] if family in (2, 10, 24, 28, 30) else None
     if linktype == LINKTYPE_ETHERNET:
         if len(frame) < 14:
             return None
