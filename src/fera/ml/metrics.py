@@ -60,11 +60,11 @@ def confusion_matrix(
     models declare different class orders, and so an off-by-one in the class
     mapping cannot hide inside an unnamed array.
     """
-    matrix = {true: {predicted: 0 for predicted in labels} for true in labels}
+    matrix = {true: dict.fromkeys(labels, 0) for true in labels}
     for true, predicted in zip(y_true, y_pred, strict=False):
         true_key, predicted_key = str(true), str(predicted)
         if true_key not in matrix:  # a true class outside the declared list
-            matrix[true_key] = {name: 0 for name in labels}
+            matrix[true_key] = dict.fromkeys(labels, 0)
         if predicted_key not in matrix[true_key]:  # e.g. a hand-written artefact
             matrix[true_key][predicted_key] = 0
         matrix[true_key][predicted_key] += 1

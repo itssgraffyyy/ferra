@@ -116,6 +116,15 @@ class CaptureSource:
                 details={"path": str(capture)},
             )
         size = capture.stat().st_size
+        if size == 0:
+            # An empty upload is a caller mistake, not an unsupported format;
+            # saying "unsupported content" would point at the wrong fix.
+            raise FeraError(
+                f"{capture.name} is empty",
+                code=ErrorCode.CAPTURE_EMPTY,
+                hint="record with tcpdump/dumpcap or upload a capture saved by Wireshark",
+                details={"path": str(capture), "size_bytes": 0},
+            )
         if size < PCAP_HEADER_BYTES:
             raise FeraError(
                 f"{capture.name} is too small to be a PCAP file ({size} bytes)",

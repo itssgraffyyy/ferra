@@ -131,6 +131,11 @@ class ProjectPaths:
         """Directory searched for operator-trained traffic classifier artefacts."""
         return self.data / "models"
 
+    @property
+    def database_file(self) -> Path:
+        """SQLite file backing the product analysis history."""
+        return self.data / "fera.db"
+
     # -- helpers ---------------------------------------------------------
     def ensure_runtime_dirs(self) -> None:
         """Create the directories the pipeline writes to."""
@@ -141,10 +146,13 @@ class ProjectPaths:
             self.logs,
             self.bundles,
             self.uploads,
+            self.models,
             self.experiments_dir,
             self.templates_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
+        # the database file lives directly in data/, so that parent must exist
+        self.data.mkdir(parents=True, exist_ok=True)
 
     def experiment_dir(self, experiment_id: str) -> Path:
         """Directory that holds all artefacts of one experiment run."""
