@@ -45,7 +45,13 @@ IPPROTO_UDP = 17
 IPPROTO_AH = 51
 IPPROTO_ESP = 50
 IPPROTO_ICMPV6 = 58
-IPV6_EXTENSION_HEADERS = {0, 43, 60, 135, 139, 140}
+#: IPv6 extension headers that carry a following next-header field.
+#: 0 Hop-by-Hop, 43 Routing, 44 Fragment, 60 Destination Options, 135 Mobility,
+#: 139 HIP, 140 Shim6.  51 (AH) and 50 (ESP) are deliberately NOT here: they are
+#: upper-layer protocols for our purposes and terminate the walk.
+#: 44 is easy to omit, and omitting it silently stops the walk at the fragment
+#: header, so an ESP packet behind a fragment is reported as "no ESP".
+IPV6_EXTENSION_HEADERS = {0, 43, 44, 60, 135, 139, 140}
 
 
 @dataclass(frozen=True)
