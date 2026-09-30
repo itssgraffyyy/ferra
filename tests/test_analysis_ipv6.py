@@ -22,6 +22,7 @@ import pytest
 from conftest import ethernet_ipv4, ethernet_ipv6, write_pcap
 from fera.analysis import analyze_pcap
 from fera.analysis.analyzer import _ip_parse, _ipv6_address
+from fera.analysis.ike import parse_ike_message
 
 ESP_OPAQUE = b"\xAA" * 16
 IPV6_ETHERTYPE = 0x86DD
@@ -198,3 +199,104 @@ def test_ethernet_ipv6_ethertype_is_not_dropped() -> None:
 @pytest.mark.parametrize("length", [0, 1, 20, 39])
 def test_ipv6_shorter_than_fixed_header_is_undecodable(length: int) -> None:
     assert _ip_parse(_ipv6_base(50, b"")[:length]) is None
+
+
+
+# --- Linux cooked captures (linktype), found via a real strongSwan pcap -------
+
+def _write_pcap_linktype(path: Path, frames: list[bytes], linktype: int) -> Path:
+    """Write a classic PCAP with an explicit link type."""
+    body = bytearray(struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 262144, linktype))
+    for index, frame in enumerate(frames):
+        body += struct.pack("<IIII", 1700000000 + index, 0, len(frame), len(frame))
+        body += frame
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(body))
+    return path
+
+
+def _sll2(ethertype: int, ip_packet: bytes) -> bytes:
+    """Linux SLL2 header (linktype 276): protocol first, 20-byte header."""
+    return struct.pack("!HHIHBB", ethertype, 0, 1, 1, 0, 6) + b"\x00" * 8 + ip_packet
+
+
+def _sll(ethertype: int, ip_packet: bytes) -> bytes:
+    """Linux SLL header (linktype 113): 16 bytes, protocol at offset 14."""
+    return struct.pack("!HHH", 0, 1, 6) + b"\x00" * 8 + struct.pack("!H", ethertype) + ip_packet
+
+
+def _ipv6_packet(next_header: int, payload: bytes) -> bytes:
+    header = struct.pack("!IHBB", 0x60000000, len(payload), next_header, 64)
+    addresses = bytes.fromhex("fd001010000000000000000000000001") + bytes.fromhex(
+        "fd001010000000000000000000000002"
+    )
+    return header + addresses + payload
+
+
+def test_sll2_capture_ike_is_decoded(tmp_path: Path) -> None:
+    """Regression: a real strongSwan pcap is linktype 276, and analysed as empty.
+
+    ``tcpdump -i any`` on the tunnel host writes Linux SLL2, which has no
+    ethertype at offset 12.  The analyser used to strip a 14-byte Ethernet
+    header from a 20-byte SLL2 one, failed to parse, and reported zero IKE for
+    a capture that plainly contained it.
+    """
+    ip_packet = _ipv6_packet(17, _udp(500, 500, _ike_v2()))
+    pcap = _write_pcap_linktype(tmp_path / "sll2.pcap", [_sll2(0x86DD, ip_packet)], 276)
+    outcome = analyze_pcap(pcap)
+    assert outcome.analysis.ike_packets == 1
+    assert outcome.analysis.ike_exchanges[0]["exchange_name"] == "IKE_SA_INIT"
+
+
+def test_sll_capture_ipv4_esp_is_decoded(tmp_path: Path) -> None:
+    ip_packet = ethernet_ipv4(50, payload=_esp_payload(0x11223344, 1))[14:]
+    pcap = _write_pcap_linktype(tmp_path / "sll.pcap", [_sll(0x0800, ip_packet)], 113)
+    outcome = analyze_pcap(pcap)
+    assert outcome.analysis.esp_packets == 1
+    assert outcome.analysis.esp_flows[0]["spi"] == "11223344"
+
+
+def test_sll2_non_ip_ethertype_is_skipped(tmp_path: Path) -> None:
+    """ARP over SLL2 must not be mistaken for IP."""
+    pcap = _write_pcap_linktype(tmp_path / "arp.pcap", [_sll2(0x0806, b"\x00" * 28)], 276)
+    outcome = analyze_pcap(pcap)
+    assert outcome.analysis.ike_packets == 0
+    assert outcome.analysis.esp_packets == 0
+
+
+def test_sll2_truncated_header_is_skipped(tmp_path: Path) -> None:
+    pcap = _write_pcap_linktype(tmp_path / "short.pcap", [_sll2(0x86DD, b"\x00" * 8)], 276)
+    assert analyze_pcap(pcap).analysis.ike_packets == 0
+
+
+def test_encrypted_natt_payload_is_not_reported_as_a_fake_exchange() -> None:
+    """Regression: ciphertext on 4500 must not invent an IKE exchange.
+
+    On a real capture the ESP-encrypted IKE messages on UDP/4500 were decoded as
+    ``UNKNOWN_EXCHANGE_177`` with nonsense message ids, because a random 4-byte
+    run carries major version 2 in the right nibble one time in sixteen.
+    """
+    cipher = struct.pack("!16sBBBBII", bytes.fromhex("aa" * 8 + "bb" * 8), 0, 0x20, 177, 0x08, 773858056, 528)
+    assert parse_ike_message(0, cipher) is None
+
+
+def test_ike_auth_with_zero_responder_spi_is_rejected() -> None:
+    """Only IKE_SA_INIT may carry a zero responder SPI (RFC 7296)."""
+    bogus = struct.pack("!16sBBBBII", bytes.fromhex("11" * 8 + "00" * 8), 33, 0x20, 35, 0x08, 1, 28)
+    assert parse_ike_message(0, bogus) is None
+
+
+def test_valid_ike_sa_init_still_parses() -> None:
+    record = parse_ike_message(0, _ike_v2())
+    assert record is not None
+    assert record.exchange_name == "IKE_SA_INIT"
+    assert record.ike_version == 2
+
+
+def test_valid_ike_auth_with_responder_spi_parses() -> None:
+    message = struct.pack(
+        "!16sBBBBII", bytes.fromhex("11" * 8 + "22" * 8), 33, 0x20, 35, 0x08, 1, 28
+    )
+    record = parse_ike_message(0, message)
+    assert record is not None
+    assert record.exchange_name == "IKE_AUTH"
