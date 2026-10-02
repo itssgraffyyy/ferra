@@ -1251,13 +1251,16 @@ def _class_inference_verdict(context: AssessmentContext) -> RuleVerdict:
         "cross_entropy_bits": prediction.cross_entropy_bits,
         "margin": prediction.margin,
         "model": f"{prediction.model_id}@{prediction.model_version}",
+        "decision": prediction.decision,
+        "rejected": prediction.is_unknown,
+        "closest_known_class": prediction.closest_known_class,
     }
     if not prediction.complete_metadata:
         return RuleVerdict(
             status=FindingStatus.NOT_VERIFIABLE,
             severity=Severity.INFO,
             explanation=(
-                f"a model labelled this traffic {prediction.predicted_class} at {prediction.confidence:.2f}, but "
+                f"a model labelled this traffic {prediction.effective_class} at {prediction.confidence:.2f}, but "
                 "the prediction carries no model id, version or feature schema, so that number cannot be "
                 "interpreted and no exposure is claimed"
             ),
@@ -1265,10 +1268,33 @@ def _class_inference_verdict(context: AssessmentContext) -> RuleVerdict:
             property_status=FindingStatus.NOT_VERIFIABLE,
             details=details,
         )
+    if prediction.is_unknown:
+        # An UNKNOWN is not a security weakness and must not be scored as one: it
+        # says the classifier declined to name a class, nothing more.  Reporting
+        # NOT_VERIFIABLE here keeps evidence coverage honest without inventing a
+        # finding, and it is explicitly not a FAIL.
+        return RuleVerdict(
+            status=FindingStatus.NOT_VERIFIABLE,
+            severity=Severity.INFO,
+            explanation=(
+                f"the classifier did not find sufficient support for any known traffic class and returned UNKNOWN "
+                f"(closest candidate {prediction.closest_known_class} at {prediction.confidence:.2f}, reason "
+                f"{prediction.rejection_reason or 'unspecified'}); this is not a weakness and not an anomaly, "
+                "it means how inferable this traffic is was not established"
+            ),
+            evidence=_ref(
+                EvidenceStatus.INFERRED,
+                source,
+                f"traffic class rejected as UNKNOWN (closest {prediction.closest_known_class})",
+                **details,
+            ),
+            property_status=FindingStatus.NOT_VERIFIABLE,
+            details=details,
+        )
     refs = _ref(
         EvidenceStatus.INFERRED,
         source,
-        f"class {prediction.predicted_class} at confidence {prediction.confidence:.3f}",
+        f"class {prediction.effective_class} at confidence {prediction.confidence:.3f}",
         **details,
     )
     inconclusive = (
@@ -1280,7 +1306,7 @@ def _class_inference_verdict(context: AssessmentContext) -> RuleVerdict:
             status=FindingStatus.WARNING,
             severity=Severity.LOW,
             explanation=(
-                f"the model's best guess is {prediction.predicted_class} at {prediction.confidence:.2f} "
+                f"the model's best guess is {prediction.effective_class} at {prediction.confidence:.2f} "
                 f"({prediction.cross_entropy_bits:.2f} bits removed), barely better than chance: the exposure is "
                 "stated as unproven rather than dismissed"
             ),
@@ -1294,7 +1320,7 @@ def _class_inference_verdict(context: AssessmentContext) -> RuleVerdict:
         status=FindingStatus.WARNING,
         severity=Severity.MEDIUM,
         explanation=(
-            f"metadata alone let {prediction.model_id} classify this traffic as {prediction.predicted_class} at "
+            f"metadata alone let {prediction.model_id} classify this traffic as {prediction.effective_class} at "
             f"{prediction.confidence:.2f}{margin}: anyone with this capture and a similarly trained model can "
             "label the traffic without decrypting a byte of it"
         ),

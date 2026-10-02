@@ -357,6 +357,14 @@ class AnalysisBundle:
                 "predicted_class": traffic.get("predicted_class"),
                 "confidence": traffic.get("confidence"),
                 "model_id": traffic.get("model_id"),
+                # The open-world decision travels with the summary so a list view
+                # can distinguish UNKNOWN from a class, but it is the backend's
+                # call: nothing here re-derives it from the confidence value.
+                "decision": traffic.get("decision"),
+                "rejected": traffic.get("rejected"),
+                "closest_known_class": traffic.get("closest_known_class"),
+                "rejection_reason": traffic.get("rejection_reason"),
+                "calibrated": traffic.get("calibrated"),
             },
             "security": None
             if security is None

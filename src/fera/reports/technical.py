@@ -299,7 +299,9 @@ def _traffic_section(traffic: Mapping[str, Any]) -> list[str]:
         ]
     rows = [
         ("Predicted class", _text(traffic.get("predicted_class"))),
+        ("Open-world decision", _text(traffic.get("decision"), default="KNOWN")),
         ("Confidence", _percent(traffic.get("confidence"))),
+        ("Confidence calibration", "CALIBRATED" if traffic.get("calibrated") else "UNCALIBRATED"),
         ("Evidence status", "INFERRED"),
         ("Low confidence", _text(traffic.get("low_confidence"), default="no")),
         ("Confidence threshold", _percent(traffic.get("confidence_threshold"))),
@@ -307,6 +309,30 @@ def _traffic_section(traffic: Mapping[str, Any]) -> list[str]:
         ("Model version", traffic.get("model_version")),
         ("Feature schema", traffic.get("feature_schema")),
     ]
+    if traffic.get("rejected"):
+        rows.append(("Closest known class", _text(traffic.get("closest_known_class"))))
+        rows.append(("Rejection reason", _text(traffic.get("rejection_reason"))))
+        rows.append(
+            (
+                "Rejection rule",
+                _text(_mapping(traffic.get("open_world")).get("policy", {}).get("rule")
+                      if isinstance(_mapping(traffic.get("open_world")).get("policy"), Mapping)
+                      else None),
+            )
+        )
+        rows.append(
+            (
+                "Threshold provenance",
+                _text(_mapping(traffic.get("open_world")).get("threshold_source"),
+                      default="UNCALIBRATED_DEFAULT"),
+            )
+        )
+        notes = (
+            "UNKNOWN means no known traffic class had sufficient support. It does not indicate "
+            "an attack, an anomaly, malware, or that the traffic is permanently unidentifiable, "
+            "and it is not a statement that the traffic is private."
+        )
+        rows.append(("Interpretation", notes))
     probabilities = _mapping(traffic.get("probabilities"))
     rows.extend((f"p({name})", f"{float(value):.4f}") for name, value in sorted(probabilities.items()))
     return [_heading(11), "<table>" + "".join(_kv(*row) for row in rows) + "</table>"]

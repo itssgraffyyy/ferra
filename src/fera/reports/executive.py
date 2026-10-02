@@ -104,10 +104,28 @@ def _traffic_section(traffic: Mapping[str, Any]) -> list[str]:
             f'<p class="note">Traffic classification unavailable. Reason: {_esc(reason)}.</p>',
         ]
     rows = [
-        ("Predicted traffic category", _text(traffic.get("predicted_class"))),
+        (
+            "Predicted traffic category",
+            "UNKNOWN - no known category had sufficient support"
+            if traffic.get("rejected")
+            else _text(traffic.get("predicted_class")),
+        ),
+        (
+            "Closest known category",
+            _text(traffic.get("closest_known_class"), default="n/a"),
+        ),
         ("Confidence", _percent(traffic.get("confidence"))),
         ("Evidence status", "INFERRED (model-derived, not observed)"),
     ]
+    if traffic.get("rejected"):
+        rows.append(
+            (
+                "Note",
+                "The encrypted traffic could not be confidently assigned to one of the traffic "
+                "categories known to the current model. This is not a security warning and does "
+                "not indicate unusual or malicious activity.",
+            )
+        )
     if traffic.get("low_confidence"):
         rows.append(("Caution", "confidence is below the configured threshold; treat the label as weak"))
     if traffic.get("model_id"):

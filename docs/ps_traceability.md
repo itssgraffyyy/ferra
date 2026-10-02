@@ -54,6 +54,27 @@ Nothing here is marked verified on the strength of a synthetic test alone.
 | SA characteristics | IKE SA + CHILD SA, SPIs, selectors | `tests/test_sa.py` | CODE VERIFIED |
 | Traffic prediction | `fera.ml.train` / `inference` → bundle `traffic` stage | `tests/test_ml_*.py`, `tests/test_api_product.py` | CODE VERIFIED |
 
+The row above is the **PS requirement** and remains the core deliverable: FERA
+predicts the traffic type inside ESP. The rows below are an *additional* FERA
+capability (Differentiator #2), not a substitute for it. The closed-set
+classifier above still works and is what produces a class when the evidence
+supports one.
+
+| Additional capability | Implementation | Verification | Status |
+|---|---|---|---|
+| Calibrated confidence (vs. raw probability) | `fera.ml.calibration` — multiclass Brier, log loss, top-label ECE, reliability curve; `FrozenEstimator` keeps the base model unrefitted | functional checks; `python -m compileall`, ruff, mypy | IMPLEMENTED — REAL-DATA VALIDATION PENDING |
+| Open-world KNOWN/UNKNOWN decision | `fera.ml.openworld` — confidence / margin / entropy signals, provenance-tagged thresholds | `tests/test_ml_openworld_integration.py` | IMPLEMENTED — UNIT/INTEGRATION TESTED, REAL-DATA VALIDATION PENDING |
+| UNKNOWN does not become a security FAIL | `fera.security.rules` reports the metadata rule `NOT_VERIFIABLE`/INFO for a rejected sample | `tests/test_ml_openworld_integration.py::test_security_rule_reports_unknown_as_not_verifiable_not_fail` | IMPLEMENTED — INTEGRATION TESTED |
+| UNKNOWN stays `INFERRED`, distinct from `NOT_VERIFIABLE` | `TrafficPrediction.decision` / `is_unknown`; documented in every payload | `tests/test_ml_openworld_integration.py::test_unknown_is_not_the_same_claim_as_not_verifiable` | IMPLEMENTED — INTEGRATION TESTED |
+| Threshold provenance survives into artefacts and UI | `RejectionPolicy.source` → `model.json` → bundle → report/dashboard | `test_threshold_provenance_is_persisted_and_flagged` | IMPLEMENTED — INTEGRATION TESTED |
+| Backward compatibility with pre-#2 artefacts | `policy_from_metadata` loads a model with no `open_world` block with rejection **disabled** | `test_old_artifact_without_open_world_loads_with_rejection_disabled` | IMPLEMENTED — UNIT-TESTED |
+| Held-out-class (leave-one-class-out) rejection evaluation | — | — | **NOT STARTED** |
+| Real open-world rejection rates / coverage | — | — | **NOT VERIFIABLE** until a real strongSwan ESP dataset exists |
+
+No threshold, rejection rate, coverage figure or open-world accuracy is claimed
+anywhere in this repository. Every number above is either a code-verification
+statement or an explicit "pending".
+
 
 ## D. Security Assessment
 

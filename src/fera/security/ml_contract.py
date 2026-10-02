@@ -39,6 +39,32 @@ class TrafficPrediction:
     feature_schema: str = ""
     features: Mapping[str, float] = field(default_factory=dict)
     source: str = "ml.inference"
+    #: Open-world decision.  ``"UNKNOWN"`` means no known class was sufficiently
+    #: supported; it is an inference about traffic class and is deliberately NOT
+    #: the same statement as a NOT_VERIFIABLE protocol fact.
+    decision: str = "KNOWN"
+    rejected: bool = False
+    closest_known_class: str = ""
+    rejection_reason: str | None = None
+    #: Whether the confidence figure behind this prediction is calibrated.
+    calibrated: bool = False
+
+    @property
+    def is_unknown(self) -> bool:
+        """True when the classifier declined to assign a known traffic class."""
+        return bool(self.rejected) or self.decision == "UNKNOWN"
+
+    @property
+    def effective_class(self) -> str:
+        """The class to reason about.
+
+        For a rejected sample this is the *closest* known class rather than the
+        literal ``UNKNOWN`` token, so downstream text reads sensibly while the
+        rejection itself stays visible through :attr:`is_unknown`.
+        """
+        if self.is_unknown:
+            return self.closest_known_class or self.predicted_class
+        return self.predicted_class
 
     def __post_init__(self) -> None:
         if not self.predicted_class:
@@ -103,6 +129,11 @@ class TrafficPrediction:
             "feature_schema": self.feature_schema,
             "features": dict(self.features),
             "source": self.source,
+            "decision": self.decision,
+            "rejected": self.is_unknown,
+            "closest_known_class": self.closest_known_class,
+            "rejection_reason": self.rejection_reason,
+            "calibrated": self.calibrated,
         }
 
 
@@ -173,6 +204,13 @@ def load_prediction(document: Mapping[str, Any] | str | Path) -> TrafficPredicti
         probabilities={str(key): float(value) for key, value in probabilities.items()},
         model_id=str(payload.get("model_id", "")),
         model_version=str(payload.get("model_version", "")),
+        decision=str(payload.get("decision") or ("UNKNOWN" if payload.get("rejected") else "KNOWN")),
+        rejected=bool(payload.get("rejected", False)),
+        closest_known_class=str(payload.get("closest_known_class") or ""),
+        rejection_reason=(
+            str(payload["rejection_reason"]) if payload.get("rejection_reason") else None
+        ),
+        calibrated=bool(payload.get("calibrated", False)),
         feature_schema=str(payload.get("feature_schema", "")),
         features={str(key): float(value) for key, value in features.items()},
         source=str(payload.get("source", "ml.inference")),

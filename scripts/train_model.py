@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import _bootstrap  # noqa: E402
 from fera.common.errors import FeraError  # noqa: E402
 from fera.common.paths import default_paths  # noqa: E402
+from fera.ml.calibration import CALIBRATION_METHODS  # noqa: E402
 from fera.ml.feature_sets import FEATURE_SETS  # noqa: E402
 from fera.ml.train import CANDIDATE_ORDER, ablate_feature_sets, train_traffic_model  # noqa: E402
 
@@ -53,6 +54,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--ablate",
         action="store_true",
         help="run the feature-set ablation instead of training a deployable model",
+    )
+    parser.add_argument(
+        "--feature-families",
+        action="store_true",
+        help="ablate the size / timing / direction / combined feature families",
+    )
+    parser.add_argument(
+        "--held-out-config",
+        action="store_true",
+        help="evaluate generalisation to configurations never seen in training",
+    )
+    parser.add_argument(
+        "--held-out-class",
+        action="store_true",
+        help="leave one traffic class out of training and measure UNKNOWN rejection of it",
+    )
+    parser.add_argument(
+        "--calibration-method",
+        default=None,
+        choices=sorted(CALIBRATION_METHODS),
+        help="fit a calibration map on the validation split and persist it with the model",
+    )
+    parser.add_argument(
+        "--open-world-threshold",
+        type=float,
+        default=None,
+        help="enable open-world rejection at this confidence threshold (validation-derived)",
     )
     parser.add_argument("--json", action="store_true", help="print the raw report to stdout")
     parser.add_argument("--log-level", default="WARNING")

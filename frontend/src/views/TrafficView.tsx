@@ -18,12 +18,21 @@ export default function TrafficView() {
   const probabilities = (traffic.probabilities as Record<string, number> | undefined) ?? {}
   const entries = Object.entries(probabilities).sort((a, b) => b[1] - a[1])
   const predicted = traffic.predicted_class as string | undefined
+  // The decision is read from the backend, never recomputed here from the
+  // confidence value: a UI threshold here would silently disagree with the
+  // model's own policy the first time either changed.
+  const rejected = Boolean(traffic.rejected)
+  const decision = (traffic.decision as string | undefined) ?? (rejected ? 'UNKNOWN' : 'KNOWN')
+  const closest = traffic.closest_known_class as string | undefined
+  const reason = traffic.rejection_reason as string | undefined
+  const calibrated = Boolean(traffic.calibrated)
+  const isUnavailable = !predicted
 
   return (
     <div className="view">
       <h2>Traffic intelligence</h2>
 
-      {!predicted ? (
+      {isUnavailable ? (
         <div className="note note-warning">
           <p className="note-title">Traffic classification unavailable.</p>
           <p>
@@ -41,12 +50,44 @@ export default function TrafficView() {
         </div>
       ) : (
         <>
-          <Card title="Prediction" subtitle="Derived from packet size and timing statistics">
-            <p className="prediction">
-              <strong>{show(predicted)}</strong>
-            </p>
+          <Card
+            title="Prediction"
+            subtitle={
+              rejected
+                ? 'No known class had sufficient support'
+                : 'Derived from packet size and timing statistics'
+            }
+          >
+            {rejected ? (
+              <>
+                <p className="prediction">
+                  <strong>UNKNOWN</strong>
+                </p>
+                <p className="muted">
+                  FERA did not find sufficient support for any traffic class known to the current model.
+                  This is not a warning and not an anomaly.
+                </p>
+                {closest ? (
+                  <p className="muted">
+                    Closest known class: <strong>{show(closest)}</strong>
+                    {reason ? <> &middot; reason: {show(reason)}</> : null}
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <p className="prediction">
+                <strong>{show(predicted)}</strong>
+              </p>
+            )}
             <p>
-              Confidence: <strong>{percent(traffic.confidence)}</strong> &middot; <EvidenceTag status="INFERRED" />
+              {rejected ? 'Closest-class probability' : 'Confidence'}:{' '}
+              <strong>{percent(traffic.confidence)}</strong> &middot;{' '}
+              <EvidenceTag status="INFERRED" />
+            </p>
+            <p className="muted">
+              Confidence calibration:{' '}
+              <strong>{calibrated ? 'CALIBRATED' : 'UNCALIBRATED'}</strong>
+              {calibrated ? '' : ' — these probabilities have not been calibrated against held-out data'}
             </p>
             {traffic.low_confidence ? (
               <p className="note note-warning">
@@ -55,6 +96,7 @@ export default function TrafficView() {
               </p>
             ) : null}
             <Fields>
+              <Field label="Decision" value={decision} />
               <Field label="Model ID" value={traffic.model_id} />
               <Field label="Model version" value={traffic.model_version} />
               <Field label="Feature schema" value={traffic.feature_schema} />
@@ -76,7 +118,7 @@ export default function TrafficView() {
                     <span className="bar-label">{name}</span>
                     <span className="bar-track">
                       <span
-                        className={name === predicted ? 'bar-fill predicted' : 'bar-fill'}
+                        className={name === (rejected ? closest : predicted) ? 'bar-fill predicted' : 'bar-fill'}
                         style={{ width: `${Math.max(0, Math.min(1, value)) * 100}%` }}
                       />
                     </span>
@@ -89,7 +131,9 @@ export default function TrafficView() {
         </>
       )}
 
-      {bundle.components.traffic && !predicted ? <UnavailableNote bundle={bundle} stage="traffic" /> : null}
+      {bundle.components.traffic && isUnavailable ? (
+        <UnavailableNote bundle={bundle} stage="traffic" />
+      ) : null}
     </div>
   )
 }

@@ -663,9 +663,84 @@ def train_traffic_model(
 #: Schema identifier of a feature-set ablation document.
 ABLATION_SCHEMA = "fera_ml_ablation_v1"
 
+#: Schema identifier of the majority-class baseline document.
+BASELINE_SCHEMA = "fera_ml_baseline_v1"
+
+#: Schema identifier of a feature-family ablation document.
+FAMILY_ABLATION_SCHEMA = "fera_ml_family_ablation_v1"
+
 #: Feature sets ablated when a caller names none: the whole whitelist against
 #: the set that removes the testbed-context columns (the shortcut risk).
 DEFAULT_ABLATION_SETS: tuple[str, ...] = ("all", "esp_core")
+
+#: Feature families evaluated by :func:`ablate_feature_families`.  They select
+#: from the canonical whitelist only - no family may name a column the extractor
+#: cannot produce, and the import-time check in :mod:`fera.ml.feature_sets`
+#: fails closed if one ever tries.
+FEATURE_FAMILIES: tuple[str, ...] = ("size", "timing", "direction", "combined")
+
+#: Family -> feature names.  ``combined`` is deliberately the whole approved
+#: whitelist: it is the reference row every other family is read against, so a
+#: narrower family that scores highly is informative rather than flattering.
+FAMILY_FEATURES: Mapping[str, tuple[str, ...]] = {
+    "size": ("avg_packet_len", "esp_avg_len", "esp_len_min", "esp_len_max", "esp_len_std"),
+    "timing": ("esp_iat_mean_s", "esp_iat_std_s", "esp_iat_max_s", "esp_span_s"),
+    "direction": (
+        "esp_fwd_packets",
+        "esp_bwd_packets",
+        "esp_fwd_bytes",
+        "esp_bwd_bytes",
+        "esp_fwd_packet_share",
+        "esp_fwd_byte_share",
+    ),
+    "combined": FEATURE_WHITELIST,
+}
+
+
+def majority_class_baseline(data: PreparedData) -> dict[str, Any]:
+    """Predict the most common training class for every held-out row.
+
+    This is not a competitor; it is the floor.  A trained classifier that cannot
+    beat "always answer the most frequent class" has learned nothing about the
+    traffic, and the whole point of computing it is that a good-looking macro F1
+    can otherwise hide exactly that.
+
+    The majority class is derived from **train** only and applied unchanged to
+    whichever split is being scored, so the baseline never sees a label from the
+    partition it is being measured on.
+    """
+    train_labels = data.labels("train")
+    if not train_labels:
+        raise _training_error("the majority baseline needs at least one training row")
+    counts = _count(train_labels)
+    # Ties break on the class name so the baseline is deterministic.
+    majority = min(counts.items(), key=lambda item: (-item[1], item[0]))[0]
+
+    report: dict[str, Any] = {
+        "schema": BASELINE_SCHEMA,
+        "classifier": "majority_class",
+        "majority_class": majority,
+        "majority_share": round(counts[majority] / len(train_labels), METRIC_PRECISION),
+        "train_label_counts": counts,
+        "splits": {},
+        "notes": [
+            "the majority class is computed on the train split only and reused verbatim",
+            "this baseline is not expected to be competitive; it exists so a trained "
+            "model's score can be shown to exceed simply guessing the commonest class",
+        ],
+    }
+    for split in SPLITS:
+        rows = data.labels(split)
+        if not rows:
+            continue
+        predictions = [majority] * len(rows)
+        metrics = classification_metrics(rows, predictions, labels=data.classes, groups=data.groups(split))
+        report["splits"][split] = {
+            "accuracy": metrics["accuracy"],
+            "macro_f1": macro_f1(metrics),
+            "sample_count": metrics["sample_count"],
+        }
+    return report
 
 
 def ablate_feature_sets(
@@ -767,12 +842,100 @@ def ablate_feature_sets(
     }
 
 
+def ablate_feature_families(
+    dataset: Path | str | Sequence[DatasetSample],
+    *,
+    families: Sequence[str] | None = None,
+    candidates: Sequence[str] | None = None,
+    seed: int = DEFAULT_SEED,
+    tolerance: float = TIE_TOLERANCE,
+    parameters: Mapping[str, Mapping[str, Any]] | None = None,
+    notes: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Train once per feature family and report what each family is worth.
+
+    Answers "which aspects of the encrypted-flow behaviour does the classifier
+    actually depend on?" by removing whole families rather than individual
+    columns.  Every run goes through :func:`train_traffic_model` unchanged - same
+    grouped split, seed, candidates and selection rule - so the only variable is
+    the column list, and nothing is persisted (``persist=False``): an ablation is
+    an experiment, not a deployable artefact.
+
+    A family that cannot train is recorded as ``blocked`` with its error rather
+    than aborting the comparison, because "timing alone could not be fitted" is
+    itself a result worth keeping.
+    """
+    requested = [str(name) for name in (families or FEATURE_FAMILIES)]
+    unknown = [name for name in requested if name not in FAMILY_FEATURES]
+    if unknown:
+        raise _training_error(
+            "unknown feature family",
+            unknown=unknown,
+            available=sorted(FAMILY_FEATURES),
+        )
+    results: list[dict[str, Any]] = []
+    for name in requested:
+        try:
+            outcome = train_traffic_model(
+                dataset,
+                features=FAMILY_FEATURES[name],
+                candidates=candidates,
+                seed=seed,
+                tolerance=tolerance,
+                parameters=parameters,
+                persist=False,
+                notes=notes,
+            )
+        except FeraError as exc:  # a blocked family is data, not a crash
+            results.append({"family": name, "status": "blocked", "error": exc.to_dict()})
+            continue
+        results.append(
+            {
+                "family": name,
+                "status": "trained",
+                "error": None,
+                "feature_count": len(FAMILY_FEATURES[name]),
+                "features": list(FAMILY_FEATURES[name]),
+                "winner": outcome["selection"]["winner"],
+                "performance_status": outcome["performance_status"],
+                "validation_macro_f1": macro_f1(dict(outcome["validation"])),
+                "test_macro_f1": macro_f1(dict(outcome["test"])),
+            }
+        )
+    trained = [item for item in results if item["status"] == "trained"]
+    return {
+        "schema": FAMILY_ABLATION_SCHEMA,
+        "generated_at": _utc_now(),
+        "seed": int(seed),
+        "criterion": SELECTION_CRITERION,
+        "families": requested,
+        "results": results,
+        "comparable": len(trained) == len(requested) and bool(trained),
+        "performance_status": (
+            PERFORMANCE_MEASURED
+            if trained and all(item["performance_status"] == PERFORMANCE_MEASURED for item in trained)
+            else PERFORMANCE_UNVERIFIED
+        ),
+        "notes": [
+            "each row re-trained the full pipeline with only that family's columns available",
+            "'combined' is the whole approved whitelist and is the reference row",
+            "a family scoring near the combined row means the removed columns were "
+            "not carrying the score; a large gap means they may be",
+            *(str(item) for item in notes),
+        ],
+    }
+
+
 __all__ = [
     "ABLATION_SCHEMA",
+    "BASELINE_SCHEMA",
     "CANDIDATE_MODELS",
     "CANDIDATE_ORDER",
     "DEFAULT_ABLATION_SETS",
     "DEFAULT_SEED",
+    "FAMILY_ABLATION_SCHEMA",
+    "FAMILY_FEATURES",
+    "FEATURE_FAMILIES",
     "FORBIDDEN_FEATURE_KEYS",
     "MIN_TRAIN_ROWS",
     "MODEL_VERSION",
@@ -783,6 +946,7 @@ __all__ = [
     "TRAINING_SCHEMA",
     "PreparedData",
     "TrainingError",
+    "ablate_feature_families",
     "ablate_feature_sets",
     "audit_data",
     "audit_features",
@@ -792,6 +956,7 @@ __all__ = [
     "evaluate_split",
     "fit_candidates",
     "fit_pipeline",
+    "majority_class_baseline",
     "prepare_dataset",
     "score_pipeline",
     "select_candidate",

@@ -24,14 +24,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ..analysis.provenance import EvidenceKind
 from ..common.errors import ErrorCode, FeraError
 from ..common.serialization import write_json
+from .calibration import uncalibrated_metadata
 from .features import FEATURE_SCHEMA, FEATURE_WHITELIST, FeatureVector
+from .openworld import RejectionPolicy, decide, default_policy, disabled_policy
 
 #: Schema identifier of a ``model.json`` metadata document.
 MODEL_SCHEMA = "fera_ml_model_v1"
@@ -55,6 +57,53 @@ DEFAULT_CONFIDENCE_THRESHOLD = 0.5
 
 #: Report file the trainer writes beside the artefact (documented layout).
 TRAINING_REPORT_FILE = "training_report.json"
+
+
+def uncalibrated_metadata_factory() -> dict[str, Any]:
+    """Default calibration state for a model whose probabilities were never mapped.
+
+    Explicit rather than ``None`` so the dashboard can print UNCALIBRATED
+    instead of treating a missing key as "probably fine".
+    """
+    return uncalibrated_metadata(
+        "this artefact carries no calibration map; its probabilities are raw estimator output"
+    )
+
+
+def policy_from_metadata(document: Mapping[str, Any] | None) -> RejectionPolicy:
+    """Rebuild a :class:`RejectionPolicy` from an artefact's ``open_world`` block.
+
+    Backward compatibility is the point of this function: an artefact written
+    before Differentiator #2 has no ``open_world`` key at all, and it must load
+    with rejection **disabled** so it behaves exactly as it always did, rather
+    than having thresholds invented for it.  A malformed block fails closed the
+    same way instead of silently degrading to a permissive default.
+    """
+    if not isinstance(document, Mapping) or not document:
+        return disabled_policy("the model artefact predates open-world rejection support")
+    raw = document.get("open_world")
+    if not isinstance(raw, Mapping) or not raw:
+        return disabled_policy("the model artefact carries no open_world block")
+    if not raw.get("enabled", False):
+        return disabled_policy(str(raw.get("reason") or "open-world rejection is disabled"))
+    return RejectionPolicy(
+        confidence_threshold=float(raw.get("confidence_threshold", 0.5)),
+        margin_threshold=(
+            float(raw["margin_threshold"]) if raw.get("margin_threshold") is not None else None
+        ),
+        entropy_threshold=(
+            float(raw["entropy_threshold"]) if raw.get("entropy_threshold") is not None else None
+        ),
+        use_margin=bool(raw.get("use_margin", False)),
+        use_entropy=bool(raw.get("use_entropy", False)),
+        enabled=True,
+        source=str(raw.get("source") or "UNCALIBRATED_DEFAULT"),
+        calibration_method=(
+            str(raw["calibration_method"]) if raw.get("calibration_method") else None
+        ),
+        calibrated=bool(raw.get("calibrated", False)),
+        notes=tuple(str(item) for item in (raw.get("notes") or ())),
+    )
 
 
 @dataclass(frozen=True)
@@ -81,6 +130,20 @@ class TrafficModel:
     #: Ordered columns this artefact was trained on (a whitelist subset for an
     #: ablation model; the runtime refuses to score a vector missing any of them).
     feature_names: tuple[str, ...] = FEATURE_WHITELIST
+    #: How the shipped estimator's probabilities were calibrated, or an explicit
+    #: ``calibrated: False`` document saying they were not.  Never ``None``: a
+    #: consumer must be able to ask "is this a calibrated confidence?" and get an
+    #: answer rather than an absent key.
+    calibration: Mapping[str, Any] = field(default_factory=uncalibrated_metadata_factory)
+    #: The open-world rejection policy in force.  A model trained before
+    #: Differentiator #2 loads with rejection *disabled* rather than silently
+    #: guessing thresholds, so an old artefact behaves exactly as it always did.
+    open_world: RejectionPolicy = field(default_factory=default_policy)
+
+    @property
+    def calibrated(self) -> bool:
+        """Whether the probabilities this model emits are calibrated."""
+        return bool(dict(self.calibration).get("calibrated", False))
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -97,6 +160,8 @@ class TrafficModel:
             "notes": list(self.notes),
             "path": str(self.path),
             "feature_names": list(self.feature_names),
+            "calibration": dict(self.calibration),
+            "open_world": self.open_world.to_dict(),
         }
 
     def compatible(self) -> bool:
@@ -162,15 +227,26 @@ class TrafficModel:
                 details={"confidence_threshold": confidence_threshold},
             )
         probabilities = self.probabilities(vector)
-        predicted, confidence = max(probabilities.items(), key=lambda item: (item[1], item[0]))
+        decision = decide(probabilities, self.open_world)
         return {
             "schema": PREDICTION_SCHEMA,
-            "predicted_class": predicted,
-            "confidence": confidence,
+            "predicted_class": decision.predicted_class,
+            "confidence": decision.confidence,
             "probabilities": probabilities,
             "evidence_status": PREDICTION_EVIDENCE_STATUS,
-            "low_confidence": bool(confidence < confidence_threshold),
+            "low_confidence": bool(decision.confidence < confidence_threshold),
             "confidence_threshold": float(confidence_threshold),
+            # Open-world decision, made here so no consumer has to re-derive it.
+            "decision": decision.decision,
+            "rejected": decision.rejected,
+            "closest_known_class": decision.closest_known_class,
+            "rejection_reason": decision.reason,
+            "top_alternatives": decision.top_alternatives,
+            "margin": decision.margin,
+            "entropy_bits": decision.entropy_bits,
+            "open_world": decision.to_dict(),
+            "calibration": dict(self.calibration),
+            "calibrated": self.calibrated,
             "model_id": self.model_id,
             "model_version": self.model_version,
             "feature_schema": self.feature_schema,
@@ -294,6 +370,8 @@ def load_model(directory: Path | str) -> TrafficModel:
         path=root,
         estimator=estimator,
         feature_names=feature_names,
+        calibration=dict(document.get("calibration") or uncalibrated_metadata_factory()),
+        open_world=policy_from_metadata(document),
     )
 
 
