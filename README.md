@@ -184,7 +184,13 @@ python scripts/run_experiment.py --config configs/experiments/exp_000_*.yaml --d
 
 Details: `docs/architecture.md`, `docs/user_guide.md`, `docs/demo_guide.md`,
 `docs/ps_traceability.md`, `docs/testbed.md`, `docs/experiment_matrix.md`,
+`docs/linux_experiments.md`, `docs/privacy_intelligence.md`,
 `docs/limitations.md`, `docs/ipsec_correctness.md`, `docs/security_baseline.md`.
+
+> **Real experiments have not been run yet.** The Linux testbed machinery is
+> built and tested but has never been executed on a real Linux host, so no real
+> ESP captures, applied netem conditions, or empirical model metrics exist. See
+> `docs/linux_experiments.md` §1 and `docs/limitations.md`.
 
 ---
 
