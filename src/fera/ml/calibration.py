@@ -198,7 +198,11 @@ def calibrate_estimator(
     if groups is not None and forbidden_groups is not None:
         assert_partition_disjoint(groups, forbidden_groups, forbidden_label=forbidden_label)
 
-    calibrated = CalibratedClassifierCV(FrozenEstimator(estimator), method=method, cv="prefit")
+    # sklearn >= 1.6 replaced the old ``cv="prefit"`` sentinel.  With a frozen
+    # estimator, ``cv=None`` is the documented spelling meaning "calibrate this
+    # estimator as-is, do not cross-validate": exactly the semantics needed
+    # here, because the base model must not be refitted on the calibration rows.
+    calibrated = CalibratedClassifierCV(FrozenEstimator(estimator), method=method, cv=None)
     calibrated.fit(list(x_calibration), [str(label) for label in y_calibration])
 
     metadata = {

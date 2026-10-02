@@ -39,6 +39,12 @@ from typing import Any
 from ..common.errors import ErrorCode, FeraError
 from ..common.paths import default_paths
 from ..common.versions import python_version
+from .calibration import (
+    calibrate_estimator,
+    check_calibration_feasibility,
+    compare_calibration,
+    uncalibrated_metadata,
+)
 from .dataset import LABEL_FIELD, SPLITS, DatasetSample, load_dataset, split_groups, split_integrity
 from .explain import importance_document
 from .feature_sets import feature_set_name, resolve_feature_set, resolve_features
@@ -48,6 +54,7 @@ from .inference import (
     write_model,
 )
 from .metrics import METRIC_PRECISION, classification_metrics, macro_f1, ordered_labels
+from .openworld import SOURCE_VALIDATION, RejectionPolicy, disabled_policy
 
 #: Schema identifier of a training report.
 TRAINING_SCHEMA = "fera_ml_training_v1"
@@ -528,6 +535,20 @@ def _resolve_samples(dataset: Path | str | Sequence[DatasetSample]) -> tuple[Dat
     return tuple(dataset)
 
 
+def _row_probabilities(pipeline: Any, data: PreparedData, split: str) -> list[dict[str, float]]:
+    """Per-row class probabilities for one split, keyed by the estimator's classes."""
+    rows = data.matrix(split)
+    if not rows:
+        return []
+    scores = pipeline.predict_proba(rows)
+    declared = getattr(pipeline, "classes_", None) or data.classes
+    names = [str(name) for name in declared]
+    return [
+        {name: round(float(value), 6) for name, value in zip(names, row, strict=True)}
+        for row in scores
+    ]
+
+
 def train_traffic_model(
     dataset: Path | str | Sequence[DatasetSample],
     *,
@@ -538,6 +559,8 @@ def train_traffic_model(
     seed: int = DEFAULT_SEED,
     tolerance: float = TIE_TOLERANCE,
     parameters: Mapping[str, Mapping[str, Any]] | None = None,
+    calibration_method: str | None = None,
+    open_world_threshold: float | None = None,
     persist: bool = True,
     notes: Sequence[str] = (),
 ) -> dict[str, Any]:
@@ -572,6 +595,63 @@ def train_traffic_model(
     importance = importance_document(pipeline, data.feature_names)
     validation = next(dict(item["validation"]) for item in reports if str(item["name"]) == winner)
 
+    # --- calibration, fitted on validation only ---------------------------
+    # Deliberately after selection and before the test split is scored, and
+    # never on test: the probability map is an improvement to the shipped
+    # estimator, not a new selection criterion.
+    calibration_meta = uncalibrated_metadata(
+        "no calibration map was requested for this model"
+    )
+    shipped: Any = pipeline
+    baseline_report = majority_class_baseline(data)
+    if calibration_method is not None:
+        feasibility = check_calibration_feasibility(data.labels("val"), method=calibration_method)
+        if feasibility["feasible"]:
+            try:
+                shipped, calibration_meta = calibrate_estimator(
+                    pipeline,
+                    data.matrix("val"),
+                    data.labels("val"),
+                    classes=data.classes,
+                    method=calibration_method,
+                    groups=data.groups("val"),
+                    forbidden_groups=data.groups("test"),
+                    forbidden_label="the held-out test split",
+                )
+            except FeraError as exc:
+                calibration_meta = uncalibrated_metadata(f"calibration failed: {exc}")
+        else:
+            calibration_meta = uncalibrated_metadata(
+                "the validation split could not support the requested calibration method: "
+                + "; ".join(str(item) for item in feasibility["reasons"])
+            )
+
+    # --- open-world rejection policy --------------------------------------
+    # A threshold supplied here is asserted by the caller to be
+    # validation-derived; we record that provenance, we do not re-derive it.
+    policy = (
+        RejectionPolicy(
+            confidence_threshold=float(open_world_threshold),
+            source=SOURCE_VALIDATION,
+            calibration_method=calibration_meta.get("method"),
+            calibrated=bool(calibration_meta.get("calibrated")),
+            notes=("threshold supplied by the operator as validation-derived",),
+        )
+        if open_world_threshold is not None
+        else disabled_policy(
+            "no open-world threshold was supplied; this model answers KNOWN only"
+        )
+    )
+
+    # --- confidence quality, before and after calibration ----------------
+    calibration_block: dict[str, Any] = {"metadata": dict(calibration_meta)}
+    if dict(calibration_meta).get("calibrated"):
+        raw_val = _row_probabilities(pipeline, data, "val")
+        cal_val = _row_probabilities(shipped, data, "val")
+        calibration_block["validation"] = compare_calibration(
+            raw_val, cal_val, data.labels("val"), data.classes
+        ).to_dict()
+
     set_name = feature_set_name(data.feature_names)
     model_id = f"fera-{set_name}-{winner}-{data.fingerprint[:8]}"
     trained_at = _utc_now()
@@ -601,6 +681,8 @@ def train_traffic_model(
         "classes": list(data.classes),
         "feature_names": list(data.feature_names),
         "feature_set": set_name,
+        "calibration": dict(calibration_meta),
+        "open_world": policy.to_dict(),
         "dataset": {
             "fingerprint": data.fingerprint,
             "rows": int(data.row_count),
@@ -628,6 +710,7 @@ def train_traffic_model(
                 else []
             ),
             "selection used the validation split only; the test block was computed after the winner existed",
+            "a majority-class baseline is reported so the trained model's score can be read against guessing",
             *(str(item) for item in notes),
         ],
     }
@@ -647,6 +730,9 @@ def train_traffic_model(
         "validation": validation,
         "test": held_out_test,
         "importance": importance,
+        "calibration": calibration_block,
+        "open_world": policy.to_dict(),
+        "majority_baseline": baseline_report,
         "performance_status": performance,
         "environment": {"python": python_version()},
         "notes": metadata["notes"],
@@ -655,7 +741,13 @@ def train_traffic_model(
     if persist:
         root = Path(target) if target is not None else default_paths().models / model_id
         report["path"] = str(root)
-        artefact = {key: str(path) for key, path in write_model(root, pipeline, metadata, report=report).items()}
+        # The *shipped* estimator is persisted, not the raw one: if calibration
+        # was fitted, inference must reload the calibrated pipeline or the
+        # probabilities it emits would not match the metadata's claim.
+        artefact = {
+            key: str(path)
+            for key, path in write_model(root, shipped, metadata, report=report).items()
+        }
         report["artefact"] = dict(artefact)
     return report
 

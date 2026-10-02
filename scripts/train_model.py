@@ -30,7 +30,12 @@ from fera.common.errors import FeraError  # noqa: E402
 from fera.common.paths import default_paths  # noqa: E402
 from fera.ml.calibration import CALIBRATION_METHODS  # noqa: E402
 from fera.ml.feature_sets import FEATURE_SETS  # noqa: E402
-from fera.ml.train import CANDIDATE_ORDER, ablate_feature_sets, train_traffic_model  # noqa: E402
+from fera.ml.train import (  # noqa: E402
+    CANDIDATE_ORDER,
+    ablate_feature_families,
+    ablate_feature_sets,
+    train_traffic_model,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -67,8 +72,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--held-out-class",
-        action="store_true",
-        help="leave one traffic class out of training and measure UNKNOWN rejection of it",
+        default=None,
+        metavar="CLASS",
+        help="leave this traffic class out of training and measure UNKNOWN rejection of it",
+    )
+    parser.add_argument(
+        "--held-out-configs",
+        default=None,
+        metavar="IDS",
+        help="comma separated configuration ids to hold out (default: the last quarter)",
     )
     parser.add_argument(
         "--calibration-method",
@@ -102,6 +114,69 @@ def _summarise(report: dict) -> None:
         print(f"note               : {note}")
 
 
+def _held_out_class_report(dataset: Path, class_name: str, kwargs: dict) -> dict:
+    """Run the leave-one-class-out experiment from the command line."""
+    from fera.ml.dataset import load_dataset  # noqa: PLC0415
+    from fera.ml.heldout import held_out_class_experiment  # noqa: PLC0415
+
+    kwargs.pop("notes", None)
+    return held_out_class_experiment(
+        load_dataset(dataset),
+        class_name,
+        candidates=kwargs.get("candidates"),
+        seed=int(kwargs.get("seed", 0)),
+    )
+
+
+def _held_out_config_report(dataset: Path, configs: str | None, kwargs: dict) -> dict:
+    """Run the held-out-configuration evaluation from the command line.
+
+    Configuration identity is read from the dataset manifest next to the
+    samples.  It is used to partition the evaluation only and never becomes a
+    feature; if the manifest is absent the run is refused rather than guessed,
+    because a fabricated configuration grouping would silently invalidate the
+    result it claims to measure.
+    """
+    import json  # noqa: PLC0415
+
+    from fera.common.paths import default_paths  # noqa: PLC0415
+    from fera.ml.dataset import load_dataset  # noqa: PLC0415
+    from fera.ml.heldout import evaluate_held_out_configurations  # noqa: PLC0415
+
+    kwargs.pop("notes", None)
+    manifest_path = dataset / "dataset_summary.json"
+    if not manifest_path.is_file():
+        manifest_path = dataset.parent / "manifest.json"
+    if not manifest_path.is_file():
+        raise SystemExit(
+            f"no manifest beside {dataset}: held-out-configuration evaluation needs the "
+            "experiment metadata that identifies each capture's configuration"
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entries = manifest.get("entries") or manifest.get("samples") or []
+    config_of = {
+        str(item.get("experiment_id")): str(item.get("configuration_hash") or item.get("experiment_id"))
+        for item in entries
+        if isinstance(item, dict) and item.get("experiment_id")
+    }
+    if not config_of:
+        raise SystemExit(f"{manifest_path} lists no usable configuration identifiers")
+    named = [name.strip() for name in (configs or "").split(",") if name.strip()]
+    if not named:
+        # Default to the last quarter of the configurations, so the split is
+        # derived from the data rather than from a number typed on the CLI.
+        unique = sorted(set(config_of.values()))
+        named = unique[max(1, (len(unique) * 3) // 4) :]
+    _ = default_paths()
+    return evaluate_held_out_configurations(
+        load_dataset(dataset),
+        config_of,
+        named,
+        candidates=kwargs.get("candidates"),
+        seed=int(kwargs.get("seed", 0)),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     _bootstrap.bootstrap_logging(args.log_level)
@@ -124,8 +199,18 @@ def main(argv: list[str] | None = None) -> int:
         kwargs: dict = {"dataset": dataset, "candidates": candidates, "notes": args.note}
         if args.seed is not None:
             kwargs["seed"] = args.seed
-        if args.ablate:
+        if args.calibration_method:
+            kwargs["calibration_method"] = args.calibration_method
+        if args.open_world_threshold is not None:
+            kwargs["open_world_threshold"] = args.open_world_threshold
+        if args.feature_families:
+            report = ablate_feature_families(**kwargs)
+        elif args.ablate:
             report = ablate_feature_sets(**kwargs)
+        elif args.held_out_class:
+            report = _held_out_class_report(dataset, args.held_out_class, kwargs)
+        elif args.held_out_config:
+            report = _held_out_config_report(dataset, args.held_out_configs, kwargs)
         else:
             if args.target:
                 kwargs["target"] = args.target
@@ -139,6 +224,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
+    elif args.feature_families:
+        for row in report.get("results") or ():
+            print(
+                f"{row.get('family'):<12} {row.get('status'):<10} "
+                f"val={row.get('validation_macro_f1')} test={row.get('test_macro_f1')}"
+            )
     elif args.ablate:
         for row in report.get("results") or ():
             print(f"{row.get('feature_set'):<12} {row.get('status'):<10} {row.get('test', {}).get('macro_f1')}")

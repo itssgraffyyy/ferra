@@ -110,7 +110,14 @@ python scripts/build_dataset.py
 
 # 5b. Train the traffic classifier (nothing is committed — you train it)
 python scripts/train_model.py
-python scripts/train_model.py --ablate      # feature-set / shortcut-risk ablation
+python scripts/train_model.py --ablate                 # feature-set / shortcut-risk ablation
+python scripts/train_model.py --feature-families       # size / timing / direction / combined
+
+# 5c. Rigorous evaluation (see docs/open_world_traffic_intelligence.md)
+python scripts/train_model.py --calibration-method sigmoid
+python scripts/train_model.py --open-world-threshold 0.6
+python scripts/train_model.py --held-out-class voip_like      # open-world rejection
+python scripts/train_model.py --held-out-config               # unseen IPsec configs
 
 # 6. Security assessment of one capture: analysis -> rules -> score
 python scripts/assess_security.py --pcap data/raw/exp_000_*/capture.pcap

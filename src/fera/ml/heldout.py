@@ -31,7 +31,7 @@ run says so; a run on real strongSwan data is the only thing that may say
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -53,11 +53,18 @@ from .openworld import (
 #: Schema identifier of one held-out-class experiment document.
 HELD_OUT_CLASS_SCHEMA = "fera_ml_held_out_class_v1"
 
+#: Schema identifier of one held-out-configuration evaluation document.
+HELD_OUT_CONFIG_SCHEMA = "fera_ml_held_out_config_v1"
+
 #: Reported when the experiment ran on data that is not real strongSwan traffic.
 STATUS_FIXTURE = "MEASURED ON SYNTHETIC FIXTURE - NOT EXPERIMENTAL EVIDENCE"
 
 #: Reported when the structure made the evaluation meaningless.
 STATUS_INVALID = "NOT MEASURABLE - SEE REASONS"
+
+#: Mirrors the trainer's defaults so this module stays independent of it.
+DEFAULT_SEED = 0
+TIE_TOLERANCE = 0.01
 
 
 def _utc_now() -> str:
@@ -311,9 +318,122 @@ def held_out_class_experiment(
     }
 
 
+def evaluate_held_out_configurations(
+    samples: Sequence[DatasetSample],
+    config_of: Mapping[str, str],
+    held_out: Sequence[str],
+    *,
+    candidates: Sequence[str] | None = None,
+    seed: int = DEFAULT_SEED,
+    tolerance: float = TIE_TOLERANCE,
+    status: str = STATUS_FIXTURE,
+) -> dict[str, Any]:
+    """Train on some IPsec configurations and evaluate on configurations it never saw.
+
+    The question differs from the ordinary grouped split.  Grouping by
+    *session* asks "does this generalise to new sessions of the same kind?";
+    this asks the harder one - "does it generalise to a tunnel configuration it
+    has never encountered?".  A classifier that scores well on the first and
+    badly on the second has learned the configuration, not the traffic.
+
+    ``config_of`` maps a group key to a configuration identifier.  That mapping
+    comes from trusted experiment metadata and is used **only** to partition the
+    evaluation: it is never appended to a feature row, so it cannot become a
+    model feature that trivially identifies the configuration.
+
+    Returns a document reporting exactly which configurations were used in each
+    partition, and refuses to claim generalisation when the held-out set cannot
+    support the claim.
+    """
+    from .train import fit_candidates, prepare_dataset
+
+    if not held_out:
+        raise _experiment_error("at least one held-out configuration must be named")
+    train = [s for s in samples if config_of.get(s.split_key) not in set(held_out)]
+    test = [s for s in samples if config_of.get(s.split_key) in set(held_out)]
+    if not train:
+        raise _experiment_error("no rows remain for training", held_out=list(held_out))
+    if not test:
+        raise _experiment_error("no rows match the held-out configurations", held_out=list(held_out))
+
+    data = prepare_dataset(train)
+    reasons: list[str] = []
+    train_configs = sorted({str(config_of.get(s.split_key)) for s in train})
+    test_configs = sorted({str(config_of.get(s.split_key)) for s in test})
+    overlap = sorted(set(train_configs) & set(test_configs))
+    if overlap:
+        reasons.append(f"configuration(s) appear on both sides: {', '.join(overlap)}")
+    for split in ("train", "val"):
+        if not data.labels(split):
+            reasons.append(f"the {split} split of the remaining configurations is empty")
+
+    if reasons:
+        return {
+            "schema": HELD_OUT_CONFIG_SCHEMA,
+            "generated_at": _utc_now(),
+            "status": STATUS_INVALID,
+            "reasons": reasons,
+            "train_configurations": train_configs,
+            "held_out_configurations": test_configs,
+            "metrics": None,
+            "notes": [
+                "the held-out configurations could not be evaluated honestly, so no "
+                "generalisation figure is reported",
+            ],
+        }
+
+    _reports, pipeline, winner = fit_candidates(data, candidates, seed=seed, tolerance=tolerance)
+    indices = _indices(data.feature_names)
+    rows = [_row_of(sample, indices) for sample in test]
+    probabilities = _probabilities(pipeline, rows)
+    predictions = [
+        max(table.items(), key=lambda item: (item[1], item[0]))[0] for table in probabilities
+    ]
+    truth = [sample.label for sample in test]
+    metrics = classification_metrics(
+        truth, predictions, labels=data.classes, groups=[s.split_key for s in test]
+    )
+    return {
+        "schema": HELD_OUT_CONFIG_SCHEMA,
+        "generated_at": _utc_now(),
+        "status": status,
+        "reasons": [],
+        "winner": winner,
+        "seed": int(seed),
+        "train_configurations": train_configs,
+        "held_out_configurations": test_configs,
+        "configuration_overlap": overlap,
+        "metrics": metrics,
+        "macro_f1": macro_f1(metrics),
+        "counts": {
+            "train_rows": len(train),
+            "held_out_rows": len(test),
+            "train_configurations": len(train_configs),
+            "held_out_configurations": len(test_configs),
+            "train_groups": len({s.split_key for s in train}),
+            "held_out_groups": len({s.split_key for s in test}),
+        },
+        "notes": [
+            "configuration identity came from experiment metadata and was used only to "
+            "partition this evaluation; it is never a model feature",
+            "a low score here means the classifier learned the configuration rather than "
+            "the traffic, which a same-configuration split cannot reveal",
+            *("reported figures describe this dataset only, not real strongSwan behaviour",),
+        ],
+    }
+
+
+def _indices(names: Sequence[str]) -> list[int]:
+    from .features import FEATURE_WHITELIST
+
+    return [FEATURE_WHITELIST.index(name) for name in names]
+
+
 __all__ = [
     "HELD_OUT_CLASS_SCHEMA",
+    "HELD_OUT_CONFIG_SCHEMA",
     "STATUS_FIXTURE",
     "STATUS_INVALID",
+    "evaluate_held_out_configurations",
     "held_out_class_experiment",
 ]

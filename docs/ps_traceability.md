@@ -68,7 +68,11 @@ supports one.
 | UNKNOWN stays `INFERRED`, distinct from `NOT_VERIFIABLE` | `TrafficPrediction.decision` / `is_unknown`; documented in every payload | `tests/test_ml_openworld_integration.py::test_unknown_is_not_the_same_claim_as_not_verifiable` | IMPLEMENTED — INTEGRATION TESTED |
 | Threshold provenance survives into artefacts and UI | `RejectionPolicy.source` → `model.json` → bundle → report/dashboard | `test_threshold_provenance_is_persisted_and_flagged` | IMPLEMENTED — INTEGRATION TESTED |
 | Backward compatibility with pre-#2 artefacts | `policy_from_metadata` loads a model with no `open_world` block with rejection **disabled** | `test_old_artifact_without_open_world_loads_with_rejection_disabled` | IMPLEMENTED — UNIT-TESTED |
-| Held-out-class (leave-one-class-out) rejection evaluation | `fera.ml.heldout.held_out_class_experiment` | `tests/test_ml_heldout.py` (9 tests) | IMPLEMENTED — INTEGRATION TESTED ON FIXTURES ONLY |
+| Held-out-class (leave-one-class-out) rejection evaluation | `fera.ml.heldout.held_out_class_experiment` | `tests/test_ml_heldout.py` | IMPLEMENTED — INTEGRATION TESTED ON FIXTURES ONLY |
+| Held-out-configuration generalisation | `fera.ml.heldout.evaluate_held_out_configurations` | `tests/test_ml_calibration.py` | IMPLEMENTED — INTEGRATION TESTED ON FIXTURES ONLY |
+| Calibration wired into training and persisted | `train_traffic_model(calibration_method=..., open_world_threshold=...)` | `tests/test_ml_calibration.py`, `tests/test_ml_openworld_integration.py` | IMPLEMENTED — INTEGRATION TESTED |
+| Majority-class baseline | `fera.ml.train.majority_class_baseline` (train-only majority) | `tests/test_ml_calibration.py` | IMPLEMENTED — UNIT-TESTED |
+| Feature-family ablation (size/timing/direction/combined) | `fera.ml.train.ablate_feature_families` | `tests/test_ml_train.py` | IMPLEMENTED — UNIT-TESTED |
 | Real open-world rejection rates / coverage | — | — | **NOT VERIFIABLE** until a real strongSwan ESP dataset exists |
 
 A fixture run of the held-out-class experiment is explicitly stamped
