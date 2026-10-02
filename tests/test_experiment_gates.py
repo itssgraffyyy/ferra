@@ -114,11 +114,17 @@ def test_dry_run_cannot_verify_a_gate() -> None:
 
 
 def test_failure_records_a_reason_and_blocks_eligibility() -> None:
+    """A FAILED run must never feed the dataset, even with every gate set."""
     state = _all_gates(ExperimentState(experiment_id="exp-001"))
+    assert state.dataset_eligible is True
+
     assert state.fail("capture produced no ESP packets") is Stage.FAILED
     assert "no ESP packets" in state.failure_reason
-    # The gates may all be true, but a FAILED run is not eligible.
-    assert state.dataset_eligible is state.real_ipsec_verified
+    # The gates may all be true, but a failed run is not eligible.
+    assert state.real_ipsec_verified is True
+    assert state.dataset_eligible is False
+    with pytest.raises(FeraError):
+        state.assert_dataset_eligible()
 
 
 def test_state_round_trips_through_a_document() -> None:

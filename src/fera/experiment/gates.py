@@ -153,12 +153,18 @@ class ExperimentState:
         """Refuse dataset eligibility for a run that is not fully evidenced.
 
         The rule this encodes: real dataset rows may only come from captures
-        whose required gates passed.  A fixture run therefore cannot feed the
-        real pipeline, and says so rather than quietly contributing rows.
+        whose required gates passed *and* whose run did not fail.  A fixture run
+        therefore cannot feed the real pipeline, and says so rather than quietly
+        contributing rows.
         """
-        if not self.real_ipsec_verified:
+        if not self.dataset_eligible:
             raise _gate_error(
-                "this run is not eligible for the real dataset: evidence gates are unmet",
+                "this run is not eligible for the real dataset: "
+                + (
+                    f"stage is {self.stage.value}"
+                    if self.real_ipsec_verified
+                    else "evidence gates are unmet"
+                ),
                 experiment_id=self.experiment_id,
                 missing=self.missing_gates,
                 stage=self.stage.value,
@@ -181,8 +187,16 @@ class ExperimentState:
 
     @property
     def dataset_eligible(self) -> bool:
-        """Dataset rows may only come from a fully evidenced run."""
-        return self.real_ipsec_verified
+        """Dataset rows may only come from a fully evidenced, non-failed run.
+
+        A FAILED or BLOCKED run can still have every gate set from an earlier
+        stage, so gate state alone is not enough: a run that failed during
+        capture must never contribute rows to the real dataset.
+        """
+        return self.real_ipsec_verified and self.stage not in {
+            Stage.FAILED,
+            Stage.BLOCKED,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         return {
