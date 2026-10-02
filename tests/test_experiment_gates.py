@@ -20,6 +20,14 @@ from fera.experiment.gates import (
     ExperimentState,
     Stage,
 )
+from fera.experiment.preflight import (
+    BLOCKED,
+    PARTIAL,
+    READY,
+    REQUIRED_CAPABILITIES,
+    run_preflight,
+)
+from fera.testbed.environment import CheckResult, CheckStatus, EnvironmentReport
 
 
 def _all_gates(state: ExperimentState) -> ExperimentState:
@@ -133,3 +141,98 @@ def test_state_round_trips_through_a_document() -> None:
     assert restored.gates["esp_verified"] is False
     assert restored.evidence["esp_packets"] == 118
     assert restored.real_ipsec_verified is False
+# ------------------------------------------------------------- preflight
+
+
+def _environment(statuses: dict[str, str]) -> EnvironmentReport:
+    """Build a synthetic environment report so preflight is testable without a host."""
+    return EnvironmentReport(
+        checks=tuple(
+            CheckResult(key=key, label=key, status=CheckStatus(value), detail="test")
+            for key, value in statuses.items()
+        ),
+        host={"platform": "test"},
+        tool_versions={},
+        generated_at="2026-01-01T00:00:00Z",
+    )
+
+
+def _linux_like() -> dict[str, str]:
+    return dict.fromkeys(REQUIRED_CAPABILITIES, "AVAILABLE")
+
+
+def test_preflight_reports_ready_when_everything_is_probed() -> None:
+    report = run_preflight(
+        require_real_experiments=True, environment=_environment(_linux_like())
+    )
+    assert report.status == READY
+    assert report.ready is True
+    assert report.can_run_real_experiments is True
+    assert report.missing_capabilities == ()
+    assert report.blocking_reasons == ()
+
+
+def test_preflight_blocks_a_host_missing_xfrm() -> None:
+    statuses = _linux_like()
+    statuses["xfrm"] = "UNSUPPORTED"
+    report = run_preflight(
+        require_real_experiments=True, environment=_environment(statuses)
+    )
+    assert report.status == BLOCKED
+    assert report.can_run_real_experiments is False
+    assert "xfrm" in report.missing_capabilities
+    assert any("xfrm" in reason for reason in report.blocking_reasons)
+
+
+def test_preflight_blocks_a_host_missing_a_capture_tool() -> None:
+    statuses = _linux_like()
+    statuses["capture_tool"] = "MISSING"
+    report = run_preflight(
+        require_real_experiments=True, environment=_environment(statuses)
+    )
+    assert report.status == BLOCKED
+    assert "capture_tool" in report.missing_capabilities
+
+
+def test_installed_binaries_alone_do_not_make_a_host_ready() -> None:
+    """swanctl present but no XFRM must still block - the historical trap."""
+    statuses = _linux_like()
+    statuses["xfrm"] = "UNSUPPORTED"
+    report = run_preflight(
+        require_real_experiments=True, environment=_environment(statuses)
+    )
+    assert report.available_capabilities  # swanctl and friends ARE available
+    assert report.can_run_real_experiments is False
+
+
+def test_dry_run_may_describe_a_blocked_host() -> None:
+    statuses = _linux_like()
+    statuses["xfrm"] = "UNSUPPORTED"
+    report = run_preflight(
+        require_real_experiments=False, environment=_environment(statuses)
+    )
+    assert report.status == PARTIAL
+    # Still not authorised for real evidence, whatever the status label.
+    assert report.can_run_real_experiments is False
+    assert report.blocking_reasons == ()
+
+
+def test_required_capabilities_are_real_environment_check_keys() -> None:
+    """A typo here reads as 'missing' and would block a good Linux host."""
+    report = run_preflight(
+        require_real_experiments=True, environment=_environment(_linux_like())
+    )
+    embedded = set(report.environment["checks"])
+    assert set(REQUIRED_CAPABILITIES) <= embedded, sorted(
+        set(REQUIRED_CAPABILITIES) - embedded
+    )
+
+
+def test_preflight_serialises_and_renders() -> None:
+    report = run_preflight(
+        require_real_experiments=True, environment=_environment({"xfrm": "UNSUPPORTED"})
+    )
+    document = report.to_dict()
+    assert document["schema"] == "fera_experiment_preflight_v1"
+    assert document["status"] in (READY, PARTIAL, BLOCKED)
+    assert "BLOCKED" in report.render_text()
