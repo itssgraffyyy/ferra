@@ -133,15 +133,44 @@ def write_pcap(path: Path, frames: Iterable[bytes]) -> Path:
     return path
 
 
+def ikev2_header(
+    *,
+    initiator_spi: int = 0x1111111122222222,
+    exchange_type: int = 34,
+    message_id: int = 1,
+) -> bytes:
+    """A syntactically valid IKEv2 header (RFC 7296 §3.2), no payloads.
+
+    A UDP datagram that merely sits on port 500 is *not* an IKE message.
+    ``tshark`` refuses to dissect such a frame (it stays ``data``) while FERA's
+    port-based scanner counts it as IKE, which makes the sanity check report
+    ``UNVERIFIED`` - correctly, because the two evidence sources disagree about
+    what is in the capture.  The synthetic IKE frames therefore have to carry a
+    real header for any dissector to agree.
+    """
+    return struct.pack(
+        "!QQBBBBII",
+        initiator_spi,
+        0,  # responder SPI: zero is only legal in IKE_SA_INIT
+        0,  # next payload: none
+        0x20,  # version 2.0
+        exchange_type,
+        0x08,  # Initiator flag
+        message_id,
+        28,  # length: header only
+    )
+
+
 def ike_and_esp_frames() -> list[bytes]:
     """A minimal but realistic mix of IKE, ESP, ICMP and IPv6 frames."""
+    ike = ikev2_header()
     return [
-        ethernet_ipv4(17, src_port=500, dst_port=500),
-        ethernet_ipv4(17, src_port=500, dst_port=500),
+        ethernet_ipv4(17, payload=ike, src_port=500, dst_port=500),
+        ethernet_ipv4(17, payload=ike, src_port=500, dst_port=500),
         ethernet_ipv4(50, payload=b"\x00" * 40),
         ethernet_ipv4(50, payload=b"\x00" * 40),
         ethernet_ipv4(1),
-        ethernet_ipv6(17, src_port=4500, dst_port=4500),
+        ethernet_ipv6(17, payload=b"\x00\x00\x00\x00" + ike, src_port=4500, dst_port=4500),
         ethernet_ipv6(50, payload=b"\x00" * 40),
     ]
 
