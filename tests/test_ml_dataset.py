@@ -48,6 +48,7 @@ def write_run(
     dry_run: bool = False,
     with_pcap: bool = True,
     traffic_class_override: str | None = None,
+    session_id: str | None = None,
 ) -> Path:
     """Write one synthetic experiment run exactly as the runner would.
 
@@ -74,6 +75,7 @@ def write_run(
         pcap_path=str(pcap_path),
         pcap_relative_path=relative_pcap,
         capture_details={"tool": "tc", "size_bytes": pcap_path.stat().st_size if with_pcap else 0},
+        session_id=session_id,
         validation={
             "status": "VALID" if valid else "INVALID",
             "valid": valid,
@@ -327,4 +329,45 @@ def test_jsonl_writer_is_canonical(sandbox_paths: ProjectPaths, topology: Any) -
     assert list(json.loads(lines[0])["features"]) == list(FEATURE_WHITELIST)
     assert target.read_text(encoding="utf-8").endswith("\n")
     assert DatasetSample(document=bundle.samples[0].to_dict()).label == "icmp"
+
+
+def test_repeats_of_one_configuration_share_a_split(sandbox_paths, topology) -> None:
+    """Repeats are independent captures of one session, so one split.
+
+    Two runs of the same configuration have different experiment ids (each
+    repeat writes its own directory) but the same session.  Splitting on the
+    session keeps them together, which is the only thing preventing a repeated
+    capture from appearing in training and leaking into the test set.
+    """
+    write_run(sandbox_paths, topology, "exp_000_aes128--r01", session_id="exp_000_aes128")
+    write_run(sandbox_paths, topology, "exp_000_aes128--r02", session_id="exp_000_aes128")
+
+    bundle = build_dataset(paths=sandbox_paths)
+    assert len(bundle.samples) == 2
+
+    samples = {sample.experiment_id: sample for sample in bundle.samples}
+    first = samples["exp_000_aes128--r01"]
+    second = samples["exp_000_aes128--r02"]
+    assert first.experiment_id != second.experiment_id
+    assert first.split_key == second.split_key == "exp_000_aes128"
+    assert first.split == second.split
+
+    # And the grouped split must keep the whole session on one side.
+    groups = split_groups(bundle.samples)
+    placed_in = [name for name, keys in groups.items() if "exp_000_aes128" in keys]
+    assert len(placed_in) == 1, groups
+    integrity = split_integrity(bundle.samples)
+    assert integrity["ok"] is True, integrity
+    assert integrity["overlapping_groups"] == {}
+
+
+def test_ground_truth_without_a_session_falls_back_to_the_experiment_id(
+    sandbox_paths, topology
+) -> None:
+    """Older ground truth has no session_id and must still split by experiment."""
+    write_run(sandbox_paths, topology, "exp_000_legacy")
+    bundle = build_dataset(paths=sandbox_paths)
+    sample = bundle.samples[0]
+    assert sample.split_key == "exp_000_legacy"
+    assert sample.to_dict()["session_id"] == "exp_000_legacy"
 

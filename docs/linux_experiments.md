@@ -293,7 +293,30 @@ Rebuild the dataset manifest:
 python scripts/build_manifest.py --raw data/raw --out data/manifests/dataset.json
 ```
 
-### 6.1 Evidence rules that will not bend
+### 6.1 Repeated sessions
+
+A single capture is not an experiment. `--repeats N` runs each experiment N
+times:
+
+```bash
+sudo python scripts/run_experiment.py --config configs/experiments --repeats 3 \
+    --capture-interface veth-a --update-manifest
+```
+
+Each repeat gets **its own `experiment_id`** (`…--r01`, `--r02`, …) so it writes
+its own directory and derives its own traffic seed, but they all share the
+original id as their **`session_id`**.
+
+The dataset splits on the *session*, not the experiment id. This matters: three
+repeats of one configuration are three windows into the same tunnel, so treating
+them as independent samples would let a capture appear in training and its
+sibling in the test set — inflating every reported score. `split_integrity()`
+proves no session straddles the boundary, and it fails loudly if one does.
+
+Ground truth written before sessions existed has no `session_id`; those samples
+fall back to splitting on the experiment id, so existing datasets keep working.
+
+### 6.2 Evidence rules that will not bend
 
 These are enforced in `src/fera/experiment/gates.py` and covered by tests:
 
@@ -355,7 +378,11 @@ empirical evidence. `docs/limitations.md` is the canonical list.
   (§1.2), and `--network-condition` applies and cleans up the netem qdisc
   (§5). The `ExperimentManifest` type in `fera/experiment/manifest.py` is still
   unused dead code and can be deleted or wired separately.
-- Add traffic/capture lifecycle management and repeated-session orchestration.
+- ~~Add traffic/capture lifecycle management and repeated-session orchestration.~~
+  Repeated sessions are wired: `--repeats N` runs each experiment N times with
+  distinct experiment ids that **share one session**, and the dataset splits on
+  the session so a repeated capture cannot land on both sides of the train/test
+  boundary. See §6.
 - ~~**Fix the matrix confounding in §4.1.**~~ Done — every configuration is now
   crossed with a second traffic class, enforced by the `config_traffic_cross` /
   `traffic_config_cross` coverage checks.
