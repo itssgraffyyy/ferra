@@ -8,6 +8,32 @@ from conftest import SWANCTL_ESTABLISHED, TSHARK_PHS, ScriptedRunner, make_confi
 from fera.common.errors import ErrorCode
 from fera.dataset.runner import ExperimentRunner, RunnerSettings, RunStatus, run_experiment
 
+#: What `ip xfrm state` / `ip xfrm policy` print on a host that really carries
+#: an IPsec SA.  Each entry begins with a `src` line; the indented continuation
+#: lines must not be counted as separate entries.
+XFRM_STATE = """src 10.10.10.1 dst 10.10.10.2
+\tsrc 10.10.10.1 dst 10.10.10.2
+\t\tauth-trunc 'sha256 0123' enc alg 'cbc(aes)' \
+\t\tauth alg 'hmac(sha256)'
+"""
+
+XFRM_POLICY = """src 10.20.0.0/24 dst 10.30.0.0/24
+\tsrc 10.20.0.0/24 dst 10.30.0.0/24
+\t\tdir out priority 0
+"""
+
+
+def full_evidence_responses() -> list[tuple[str, int, str]]:
+    """Scripted responses describing a genuinely encrypted run."""
+    return [
+        ("--list-sas", 0, SWANCTL_ESTABLISHED),
+        ("--initiate", 0, ""),
+        ("ip xfrm state", 0, XFRM_STATE),
+        ("ip xfrm policy", 0, XFRM_POLICY),
+        ("tshark", 0, TSHARK_PHS),
+        ("ping", 0, "1 packets transmitted, 1 received"),
+    ]
+
 
 @pytest.fixture()
 def allow_capture(monkeypatch):
@@ -72,16 +98,85 @@ def test_existing_experiment_directory_is_not_overwritten(sandbox_paths, topolog
     assert third.status is RunStatus.DRY_RUN
 
 
-def test_successful_run_produces_a_valid_dataset_sample(sandbox_paths, topology, allow_capture) -> None:
+def test_run_without_xfrm_evidence_is_not_integration_verified(
+    sandbox_paths, topology, allow_capture
+) -> None:
+    """IKE up + valid capture is *not* real-IPsec evidence.
+
+    This is the historical failure: strongSwan negotiated, ping succeeded, every
+    indicator FERA checked was green, and the payload had in fact travelled a
+    cleartext path.  With no XFRM state and policy observed, the run must not
+    claim integration, even though the run itself succeeded.
+    """
     config = make_config(capture_duration_s=1.0)
     runner = ScriptedRunner(
         responses=[
             ("--list-sas", 0, SWANCTL_ESTABLISHED),
             ("--initiate", 0, ""),
+            # `ip xfrm` succeeds but reports an empty table: probed and empty.
+            ("ip xfrm state", 0, ""),
+            ("ip xfrm policy", 0, ""),
             ("tshark", 0, TSHARK_PHS),
             ("ping", 0, "1 packets transmitted, 1 received"),
         ]
     )
+    outcome = make_runner(config, sandbox_paths, topology, runner).run()
+
+    assert outcome.status is RunStatus.SUCCESS, outcome.message
+    assert outcome.valid_capture is True
+    assert outcome.integration_verified is False
+    assert outcome.gates is not None
+    assert outcome.gates["real_ipsec_verified"] is False
+    assert "xfrm_state_verified" in outcome.gates["missing_gates"]
+    assert "xfrm_policy_verified" in outcome.gates["missing_gates"]
+
+
+def test_gate_document_is_written_next_to_the_ground_truth(
+    sandbox_paths, topology, allow_capture
+) -> None:
+    config = make_config(capture_duration_s=1.0)
+    runner = ScriptedRunner(responses=full_evidence_responses())
+    outcome = make_runner(config, sandbox_paths, topology, runner).run()
+
+    gates_file = outcome.experiment_dir / "gates.json"
+    assert gates_file.is_file()
+
+    from fera.dataset.ground_truth import load_ground_truth
+
+    document = load_ground_truth(outcome.ground_truth_path).to_dict()
+    # The claim is auditable from the artefact itself, not just from the outcome.
+    assert document["evidence_gates"]["real_ipsec_verified"] is True
+    assert document["evidence_gates"]["missing_gates"] == []
+    assert document["evidence_gates"]["verified_gates"]
+
+
+def test_ike_success_alone_never_reports_dataset_eligible(
+    sandbox_paths, topology, allow_capture
+) -> None:
+    """IKE negotiated, nothing else: not eligible, and it says why."""
+    config = make_config(capture_duration_s=1.0)
+    runner = ScriptedRunner(
+        responses=[
+            ("--list-sas", 0, SWANCTL_ESTABLISHED),
+            ("--initiate", 0, ""),
+            ("ip xfrm state", 0, ""),
+            ("ip xfrm policy", 0, ""),
+            ("tshark", 0, TSHARK_PHS),
+            ("ping", 0, "1 packets transmitted, 1 received"),
+        ]
+    )
+    outcome = make_runner(config, sandbox_paths, topology, runner).run()
+
+    gates = outcome.gates
+    assert gates is not None
+    assert gates["evidence_gates"]["ike_sa_verified"] is True
+    assert gates["dataset_eligible"] is False
+    assert gates["stage"] != "MANIFEST_FINALIZED"
+
+
+def test_successful_run_produces_a_valid_dataset_sample(sandbox_paths, topology, allow_capture) -> None:
+    config = make_config(capture_duration_s=1.0)
+    runner = ScriptedRunner(responses=full_evidence_responses())
     outcome = make_runner(
         config, sandbox_paths, topology, runner, update_manifest=True
     ).run()

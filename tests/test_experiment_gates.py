@@ -18,7 +18,11 @@ from fera.common.errors import FeraError
 from fera.experiment.gates import (
     EVIDENCE_GATES,
     ExperimentState,
+    GateEvidence,
     Stage,
+    _xfrm_entries,
+    derive_gate_state,
+    probe_xfrm,
 )
 from fera.experiment.preflight import (
     BLOCKED,
@@ -242,3 +246,115 @@ def test_preflight_serialises_and_renders() -> None:
     assert document["schema"] == "fera_experiment_preflight_v1"
     assert document["status"] in (READY, PARTIAL, BLOCKED)
     assert "BLOCKED" in report.render_text()
+
+
+# --- XFRM evidence collection ------------------------------------------------
+
+#: Two SAs, each printed as a `src` line followed by indented continuations.
+TWO_SA_STATE = (
+    "src 10.10.10.1 dst 10.10.10.2\n"
+    "\tsrc 10.10.10.1 dst 10.10.10.2\n"
+    "\t\tauth-trunc 'sha256 0123' enc alg 'aes'\n"
+    "src 10.10.10.1 dst 10.10.10.3\n"
+    "\tsrc 10.10.10.1 dst 10.10.10.3\n"
+)
+
+
+class _StubRunner:
+    """Minimal runner returning a canned `ip xfrm` response."""
+
+    def __init__(self, stdout: str = "", *, returncode: int = 0, stderr: str = "") -> None:
+        self._stdout = stdout
+        self._returncode = returncode
+        self._stderr = stderr
+        self.commands: list[list[str]] = []
+
+    def run(self, command, **_kwargs):
+        self.commands.append([str(part) for part in command])
+
+        class _Result:
+            ok = self._returncode == 0
+            stdout = self._stdout
+            stderr = self._stderr
+            returncode = self._returncode
+
+        return _Result()
+
+
+def test_xfrm_entries_counts_blocks_not_continuation_lines() -> None:
+    """Indented continuation lines must not be counted as separate entries.
+
+    An inflated count would make an almost-empty table look populated and could
+    satisfy the XFRM gates on a host that never established an SA.
+    """
+    assert _xfrm_entries(TWO_SA_STATE) == 2
+    assert _xfrm_entries("") == 0
+    assert _xfrm_entries("\n\n") == 0
+
+
+def test_probe_xfrm_reports_the_entries_it_observed() -> None:
+    result = probe_xfrm(_StubRunner(TWO_SA_STATE))
+    assert result["available"] is True
+    assert result["state_entries"] == 2
+    assert result["policy_entries"] == 2
+    assert result["reason"] == ""
+
+
+def test_probe_xfrm_reports_a_refused_probe_without_claiming_no_sa() -> None:
+    result = probe_xfrm(_StubRunner("", returncode=1, stderr="Operation not permitted"))
+    assert result["available"] is False
+    assert "Operation not permitted" in result["reason"]
+
+
+def test_unprobed_xfrm_is_distinct_from_an_empty_table() -> None:
+    """A host that cannot probe XFRM must not look like one with no SA.
+
+    Both readings lead to "not verified", but they mean different things and the
+    evidence document has to be able to tell them apart.
+    """
+    empty = derive_gate_state(GateEvidence(True, True, False, False, True, True))
+    unprobed = derive_gate_state(GateEvidence(True, True, None, None, True, True))
+    assert empty["real_ipsec_verified"] is False
+    assert unprobed["real_ipsec_verified"] is False
+    assert (
+        empty["evidence"]["xfrm_state_present"]
+        is not unprobed["evidence"]["xfrm_state_present"]
+    )
+
+
+def test_every_gate_must_be_satisfied_before_verification() -> None:
+    full = derive_gate_state(GateEvidence(True, True, True, True, True, True))
+    assert full["real_ipsec_verified"] is True
+    assert full["missing_gates"] == []
+    assert full["stage"] == "MANIFEST_FINALIZED"
+
+    for missing in (
+        GateEvidence(False, True, True, True, True, True),
+        GateEvidence(True, False, True, True, True, True),
+        GateEvidence(True, True, False, True, True, True),
+        GateEvidence(True, True, True, False, True, True),
+        GateEvidence(True, True, True, True, False, True),
+        GateEvidence(True, True, True, True, True, False),
+    ):
+        state = derive_gate_state(missing)
+        assert state["real_ipsec_verified"] is False
+        assert state["missing_gates"], state
+        assert state["dataset_eligible"] is False
+
+
+def test_protected_payload_without_a_child_sa_is_not_a_gate() -> None:
+    """Traffic that generated successfully proves nothing without a CHILD_SA.
+
+    This is the historical failure in miniature: bytes moved and every indicator
+    looked green, but no SA protected them.
+    """
+    state = derive_gate_state(GateEvidence(True, False, True, True, True, True))
+    assert "protected_payload_verified" in state["missing_gates"]
+    assert state["real_ipsec_verified"] is False
+
+
+def test_a_failed_run_is_never_dataset_eligible() -> None:
+    state = derive_gate_state(GateEvidence(True, True, True, True, True, True), failed=True)
+    assert state["real_ipsec_verified"] is True
+    assert state["stage"] == "FAILED"
+    assert state["dataset_eligible"] is False

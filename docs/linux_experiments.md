@@ -62,15 +62,41 @@ sockets now come up unprivileged.
   userspace does not). Install with
   `sudo apt-get install libstrongswan-standard-plugins`.
 
-### 1.2 A known wiring gap
+### 1.2 Gate wiring: resolved; netem still manual
 
-`scripts/run_experiment.py` is the real execution driver. It **does not yet
-import or call** `fera.experiment.netem`, `preflight`, `gates`, or `manifest`.
+`scripts/run_experiment.py` no longer takes `integration_verified` on trust. It
+used to pass a literal `True` into the ground truth document, so **any run that
+produced a parseable capture claimed real-IPsec integration** — including one
+where the payload had crossed a cleartext path. That is exactly the failure
+`fera.experiment.gates` was written to catch, and nothing consulted it.
 
-This means the netem procedure in §5 is **manual**. You apply and clean up the
-qdisc yourself around each `run_experiment.py` invocation. Wiring the planner
-into the driver is outstanding work, and the manual ordering below is what that
-wiring will have to reproduce.
+The runner now collects observed evidence and derives the claim:
+
+| Gate | Evidence it requires |
+|---|---|
+| `ike_sa_verified` | `swanctl --list-sas` reports `ESTABLISHED` |
+| `child_sa_verified` | the CHILD_SA reports `INSTALLED` |
+| `xfrm_state_verified` | `ip xfrm state` lists at least one entry |
+| `xfrm_policy_verified` | `ip xfrm policy` lists at least one entry |
+| `protected_payload_verified` | traffic generated **and** a CHILD_SA was installed |
+| `esp_verified` | ESP present in the capture |
+
+`integration_verified` is true only when all six hold. Each run also writes
+`gates.json`, and the ground truth document embeds the same gate state, so the
+claim can be audited from the artefacts rather than taken on trust. A run with
+unmet gates still exits `SUCCESS` with a valid capture — the capture is real —
+but it is no longer advertised as real-IPsec evidence.
+
+Two deliberate distinctions: an XFRM probe that *could not run* (unprivileged
+`RTNETLINK answers: Operation not permitted`) is recorded as **not probed**
+rather than **no SA exists**; and traffic that generated successfully does not
+satisfy the protected-payload gate on its own, since bytes moving proves nothing
+about which path they took.
+
+`fera.experiment.netem` is still **not** wired into the driver: the netem
+procedure in §5 remains manual, applied and cleaned up by hand around each
+`run_experiment.py` invocation. The manifest, preflight-style environment check
+and gates are wired.
 
 ---
 
