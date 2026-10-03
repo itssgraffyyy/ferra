@@ -282,14 +282,20 @@ def build_sample(
 
     The feature vector is computed first and *independently*: ground truth only
     supplies the sibling metadata fields (label, label basis, ids) that are
-    written next to it.  The split is derived from the experiment id, so all
-    captures of one experiment always share one split.
+    written next to it.  The split is derived from the **session id**, so all
+    captures of one session always share one split.
     """
     path = Path(pcap_path)
     vector = extract_features(path)
     experiment_id = str(ground_truth.get("experiment_id") or "")
     if not experiment_id:
         raise _contract_error("ground truth has no experiment_id", pcap_path=str(path))
+    # A session groups the repeats of one configuration.  Splitting on it keeps
+    # every repeat of a configuration inside a single split, so a repeated
+    # capture cannot appear in training and leak into the test set.  Ground truth
+    # written before sessions existed has no session_id, and the experiment id is
+    # then the session.
+    session_id = str(ground_truth.get("session_id") or "") or experiment_id
     capture = ground_truth.get("capture")
     capture_block = capture if isinstance(capture, Mapping) else {}
     capture_id = str(capture_block.get("path") or paths.relative(path))
@@ -298,9 +304,10 @@ def build_sample(
         "feature_schema": FEATURE_SCHEMA,
         "generated_at": _utc_now(),
         "experiment_id": experiment_id,
+        "session_id": session_id,
         "capture_id": capture_id,
-        "split_key": experiment_id,
-        SPLIT_COLUMN: split_of(experiment_id, seed=seed, fractions=fractions),
+        "split_key": session_id,
+        SPLIT_COLUMN: split_of(session_id, seed=seed, fractions=fractions),
         LABEL_FIELD: ground_truth.get("traffic_class"),
         "label_basis": ground_truth.get("traffic_label_basis"),
         "evidence_status": EVIDENCE_STATUS,

@@ -81,6 +81,7 @@ def build_ground_truth(
     timing: Mapping[str, Any] | None = None,
     experiment_config_path: str | None = None,
     generated_config: Mapping[str, Any] | None = None,
+    session_id: str | None = None,
     notes: str | None = None,
 ) -> GroundTruth:
     """Build the ground-truth document of one experiment run.
@@ -93,6 +94,7 @@ def build_ground_truth(
         "schema_version": 1,
         "ground_truth_source": GROUND_TRUTH_SOURCE,
         "experiment_id": config.experiment_id,
+        "session_id": session_id,
         "configuration_hash": config.fingerprint,
         "generated_at": _utc_now(),
         "execution": {

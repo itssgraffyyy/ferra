@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -49,6 +50,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="netem condition applied to the capture interface during the run")
     parser.add_argument("--network-interface", default=None,
                         help="interface for the netem qdisc (default: the capture interface)")
+    parser.add_argument("--repeats", type=int, default=1,
+                        help="run each experiment N times; every repeat joins the same session "
+                             "so it cannot leak across the train/test split")
     parser.add_argument("--limit", type=int, default=None, help="run at most N experiments of a directory")
     parser.add_argument("--continue-on-error", action="store_true",
                         help="keep going when one experiment fails (batch mode)")
@@ -118,23 +122,36 @@ def main(argv: list[str] | None = None) -> int:
             if not args.continue_on_error:
                 return worst_status
             continue
-        outcome = ExperimentRunner(config, paths=paths, settings=settings, topology=topology).run()
-        outcomes.append(outcome.to_dict())
-        print(f"  status : {outcome.status.value}")
-        if outcome.error_code:
-            print(f"  error  : {outcome.error_code.value} - {outcome.message}")
-        if outcome.pcap_path:
-            print(f"  pcap   : {paths.relative(outcome.pcap_path)}")
-        if outcome.ground_truth_path:
-            print(f"  truth  : {paths.relative(outcome.ground_truth_path)}")
-        if outcome.status is RunStatus.SUCCESS:
-            print("  result : VALID dataset sample")
-        elif outcome.status is RunStatus.DRY_RUN:
-            print("  result : dry run (nothing executed, not a dataset sample)")
-        elif outcome.status is RunStatus.UNSUPPORTED_ENVIRONMENT:
-            worst_status = max(worst_status, 3)
-        else:
-            worst_status = max(worst_status, 1)
+        for repeat in range(max(1, args.repeats)):
+            # Every repeat gets its own experiment id (so it writes its own
+            # directory and derives its own traffic seed) but they all share the
+            # original id as their session, which keeps them inside one split.
+            repeat_id = config.experiment_id if repeat == 0 else f"{config.experiment_id}--r{repeat:02d}"
+            run_config = config if repeat == 0 else replace(config, experiment_id=repeat_id)
+            run_settings = replace(settings, session_id=config.experiment_id)
+            outcome = ExperimentRunner(
+                run_config, paths=paths, settings=run_settings, topology=topology
+            ).run()
+            outcomes.append(outcome.to_dict())
+            if args.repeats > 1:
+                print(f"  repeat : {repeat + 1}/{args.repeats} ({repeat_id})")
+            print(f"  status : {outcome.status.value}")
+            if outcome.error_code:
+                print(f"  error  : {outcome.error_code.value} - {outcome.message}")
+            if outcome.pcap_path:
+                print(f"  pcap   : {paths.relative(outcome.pcap_path)}")
+            if outcome.ground_truth_path:
+                print(f"  truth  : {paths.relative(outcome.ground_truth_path)}")
+            if outcome.status is RunStatus.SUCCESS:
+                print("  result : VALID dataset sample")
+            elif outcome.status is RunStatus.DRY_RUN:
+                print("  result : dry run (nothing executed, not a dataset sample)")
+            elif outcome.status is RunStatus.UNSUPPORTED_ENVIRONMENT:
+                worst_status = max(worst_status, 3)
+            else:
+                worst_status = max(worst_status, 1)
+            if outcome.status in {RunStatus.FAILED, RunStatus.UNSUPPORTED_ENVIRONMENT} and not args.continue_on_error:
+                break
         if outcome.status in {RunStatus.FAILED, RunStatus.UNSUPPORTED_ENVIRONMENT} and not args.continue_on_error:
             break
 

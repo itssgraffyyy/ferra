@@ -110,6 +110,10 @@ class RunnerSettings:
     #: Interface the qdisc is applied to.  ``None`` means the capture interface,
     #: which is what an impairment experiment actually wants to shape.
     network_interface: str | None = None
+    #: Session this run belongs to.  Repeats of one configuration share a
+    #: configuration but must land in the same split, so the split key is the
+    #: session, not the experiment id.
+    session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -690,6 +694,17 @@ class ExperimentRunner:
         except Exception:  # noqa: BLE001 - version probing must not break a run
             return {}
 
+    @property
+    def session_id(self) -> str:
+        """The session this run belongs to.
+
+        Defaults to the experiment id, which reproduces the previous split
+        behaviour exactly for a single run per experiment.  Repeats must set it
+        explicitly to the shared session id, otherwise each repeat would derive
+        its own key and a repeated capture could leak across the split boundary.
+        """
+        return self.settings.session_id or self.config.experiment_id
+
     def _build_ground_truth(
         self,
         *,
@@ -747,6 +762,7 @@ class ExperimentRunner:
             },
             experiment_config_path=self.paths.relative(self.experiment_dir / "experiment.yaml"),
             generated_config=generated.to_dict() if generated is not None else None,
+            session_id=self.session_id,
             notes=notes,
         )
 
