@@ -293,6 +293,40 @@ Rebuild the dataset manifest:
 python scripts/build_manifest.py --raw data/raw --out data/manifests/dataset.json
 ```
 
+### 6.0 Verify what you produced
+
+A manifest records a SHA-256 per capture, but nothing re-checked those hashes —
+a replaced or truncated capture would still be advertised as a valid sample.
+`verify_dataset.py` re-hashes every capture the manifest lists and reports which
+code produced the dataset:
+
+```bash
+python scripts/verify_dataset.py                 # exit 0 only if everything matches
+python scripts/verify_dataset.py --json data/manifests/provenance.json
+```
+
+```
+FERA dataset provenance
+source commit : a438bb2… (main, dirty)
+  note: uncommitted changes; the commit alone will not reproduce this
+
+captures checked : 1
+  matched        : 1
+result: VERIFIED
+```
+
+Three states are reported separately, because they mean different things:
+
+| State | Meaning |
+|---|---|
+| `matched` | the bytes still hash to what the run recorded |
+| `MISMATCHED` | the capture changed after the run — **not** a valid sample |
+| `no hash recorded` | predates hash recording; unverifiable, never counted as a pass |
+
+The **dirty** flag matters as much as the commit: results produced from
+uncommitted changes cannot be reproduced from the commit alone, so the report
+says so rather than implying a clean revision.
+
 ### 6.1 Repeated sessions
 
 A single capture is not an experiment. `--repeats N` runs each experiment N
@@ -386,7 +420,11 @@ empirical evidence. `docs/limitations.md` is the canonical list.
 - ~~**Fix the matrix confounding in §4.1.**~~ Done — every configuration is now
   crossed with a second traffic class, enforced by the `config_traffic_cross` /
   `traffic_config_cross` coverage checks.
-- Add the artifact-directory layout and a single reproducibility CLI.
+- ~~Add the artifact-directory layout and a single reproducibility CLI.~~
+  Partly done — `scripts/verify_dataset.py` records the source revision (with a
+  dirty-tree flag) and re-hashes every capture the manifest lists, exiting
+  non-zero when anything fails to verify (§6.0). A single *entry point* that runs
+  matrix → experiments → manifest → dataset is still outstanding.
 - Perform the first real run, then replace this document's pending items with
   measured results.
 
