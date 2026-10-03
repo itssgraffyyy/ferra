@@ -246,6 +246,181 @@ MATRIX_ENTRIES: tuple[MatrixEntry, ...] = (
         tags=("transport", "cbc", "hmac", "pfs-off"),
         notes="transport mode, AES-128-CBC + HMAC-SHA-256, PFS off, video-like flow",
     ),
+    # -- crossed traffic classes ----------------------------------------
+    # Every configuration above is repeated once with a *different* traffic
+    # class, so configuration and traffic class are not collinear: each
+    # configuration carries two classes and each class is spread over several
+    # configurations.  Without this, a classifier could score well by
+    # recognising the IPsec configuration instead of the traffic
+    # ("all web = GCM, all video = CBC").  Verified by the config_traffic_cross
+    # and traffic_config_cross checks in check_coverage().
+    MatrixEntry(  # exp_000 parameters, web instead of ICMP
+        IpsecMode.TUNNEL,
+        EncryptionAlg.AES128_GCM,
+        IntegrityAlg.AEAD,
+        DhGroup.ECP256,
+        True,
+        4,
+        TrafficClass.WEB,
+        tags=("aead", "crossed"),
+        notes="crossed: exp_000's parameters with web traffic instead of ICMP",
+    ),
+    MatrixEntry(  # exp_001 parameters, video-like instead of web
+        IpsecMode.TUNNEL,
+        EncryptionAlg.AES256_GCM,
+        IntegrityAlg.AEAD,
+        DhGroup.ECP384,
+        True,
+        4,
+        TrafficClass.VIDEO_LIKE,
+        tags=("aead", "crossed"),
+        notes="crossed: exp_001's parameters with video-like traffic instead of web",
+    ),
+    MatrixEntry(  # exp_002 parameters, email-like instead of ICMP
+        IpsecMode.TUNNEL,
+        EncryptionAlg.AES128_GCM,
+        IntegrityAlg.AEAD,
+        DhGroup.ECP256,
+        False,
+        4,
+        TrafficClass.EMAIL_LIKE,
+        tags=("pfs_off", "aead", "crossed"),
+        notes="crossed: exp_002's parameters with email-like traffic instead of ICMP",
+    ),
+    MatrixEntry(  # exp_003 parameters, VoIP-like instead of ICMP
+        IpsecMode.TUNNEL,
+        EncryptionAlg.AES128_CBC,
+        IntegrityAlg.HMAC_SHA256,
+        DhGroup.MODP3072,
+        True,
+        4,
+        TrafficClass.VOIP_LIKE,
+        tags=("cbc", "crossed"),
+        notes="crossed: exp_003's parameters with VoIP-like traffic instead of ICMP",
+    ),
+    MatrixEntry(  # exp_004 parameters, web instead of video-like
+        IpsecMode.TUNNEL,
+        EncryptionAlg.AES256_CBC,
+        IntegrityAlg.HMAC_SHA384,
+        DhGroup.ECP384,
+        True,
+        4,
+        TrafficClass.WEB,
+        tags=("cbc", "crossed"),
+        notes="crossed: exp_004's parameters with web traffic instead of video-like",
+    ),
+    MatrixEntry(  # exp_005 parameters, messaging-like instead of ICMP
+        IpsecMode.TUNNEL,
+        EncryptionAlg.AES256_GCM,
+        IntegrityAlg.AEAD,
+        DhGroup.ECP384,
+        True,
+        6,
+        TrafficClass.MESSAGING_LIKE,
+        tags=("aead", "crossed"),
+        notes="crossed: exp_005's parameters with messaging-like traffic instead of ICMP",
+    ),
+    MatrixEntry(  # exp_006 parameters, video-like instead of messaging-like
+        IpsecMode.TUNNEL,
+        EncryptionAlg.AES128_CBC,
+        IntegrityAlg.HMAC_SHA256,
+        DhGroup.MODP3072,
+        False,
+        6,
+        TrafficClass.VIDEO_LIKE,
+        tags=("pfs_off", "cbc", "crossed"),
+        notes="crossed: exp_006's parameters with video-like traffic instead of messaging-like",
+    ),
+    MatrixEntry(  # exp_007 parameters, ICMP instead of email-like
+        IpsecMode.TUNNEL,
+        EncryptionAlg.AES256_CBC,
+        IntegrityAlg.HMAC_SHA512,
+        DhGroup.MODP3072,
+        True,
+        4,
+        TrafficClass.ICMP,
+        tags=("cbc", "crossed"),
+        notes="crossed: exp_007's parameters with ICMP instead of email-like traffic",
+    ),
+
+    MatrixEntry(  # exp_008 parameters, email-like instead of messaging-like
+        IpsecMode.TUNNEL,
+        EncryptionAlg.AES128_GCM,
+        IntegrityAlg.AEAD,
+        DhGroup.CURVE25519,
+        True,
+        4,
+        TrafficClass.EMAIL_LIKE,
+        tags=("aead", "crossed"),
+        notes="crossed: exp_008's parameters with email-like traffic instead of messaging-like",
+    ),
+    MatrixEntry(  # exp_009 parameters, VoIP-like instead of ICMP
+        IpsecMode.TRANSPORT,
+        EncryptionAlg.AES128_GCM,
+        IntegrityAlg.AEAD,
+        DhGroup.ECP256,
+        True,
+        4,
+        TrafficClass.VOIP_LIKE,
+        tags=("aead", "crossed"),
+        notes="crossed: exp_009's parameters with VoIP-like traffic instead of ICMP",
+    ),
+    MatrixEntry(  # exp_010 parameters, video-like instead of email-like
+        IpsecMode.TRANSPORT,
+        EncryptionAlg.AES256_CBC,
+        IntegrityAlg.HMAC_SHA512,
+        DhGroup.ECP384,
+        True,
+        4,
+        TrafficClass.VIDEO_LIKE,
+        tags=("cbc", "crossed"),
+        notes="crossed: exp_010's parameters with video-like traffic instead of email-like",
+    ),
+    MatrixEntry(  # exp_011 parameters, web instead of VoIP-like
+        IpsecMode.TRANSPORT,
+        EncryptionAlg.AES256_GCM,
+        IntegrityAlg.AEAD,
+        DhGroup.MODP3072,
+        True,
+        6,
+        TrafficClass.WEB,
+        tags=("aead", "crossed"),
+        notes="crossed: exp_011's parameters with web traffic instead of VoIP-like",
+    ),
+    MatrixEntry(  # exp_012 parameters, messaging-like instead of web
+        IpsecMode.TRANSPORT,
+        EncryptionAlg.AES128_GCM,
+        IntegrityAlg.AEAD,
+        DhGroup.ECP256,
+        False,
+        6,
+        TrafficClass.MESSAGING_LIKE,
+        tags=("pfs_off", "aead", "crossed"),
+        notes="crossed: exp_012's parameters with messaging-like traffic instead of web",
+    ),
+    MatrixEntry(  # exp_013 parameters, email-like instead of VoIP-like
+        IpsecMode.TRANSPORT,
+        EncryptionAlg.AES256_GCM,
+        IntegrityAlg.AEAD,
+        DhGroup.ECP384,
+        True,
+        4,
+        TrafficClass.EMAIL_LIKE,
+        tags=("aead", "crossed"),
+        notes="crossed: exp_013's parameters with email-like traffic instead of VoIP-like",
+    ),
+    MatrixEntry(  # exp_014 parameters, messaging-like instead of video-like
+        IpsecMode.TRANSPORT,
+        EncryptionAlg.AES128_CBC,
+        IntegrityAlg.HMAC_SHA256,
+        DhGroup.ECP256,
+        False,
+        4,
+        TrafficClass.MESSAGING_LIKE,
+        tags=("pfs_off", "cbc", "crossed"),
+        notes="crossed: exp_014's parameters with messaging-like traffic instead of video-like",
+    ),
+
 )
 
 
@@ -309,6 +484,24 @@ def build_matrix(
 def _example(configs: Sequence[ExperimentConfig], predicate: Callable[[ExperimentConfig], bool]) -> str:
     matches = [config.experiment_id for config in configs if predicate(config)]
     return f"{len(matches)} experiment(s), e.g. {matches[0]}" if matches else "none"
+
+
+def configuration_key(config: ExperimentConfig) -> tuple[Any, ...]:
+    """Identity of a *configuration*: every parameter except the traffic class.
+
+    Mirrors ``fera.experiment.dryrun._configuration_id`` so the coverage report
+    and the dry run group experiments the same way.  Leaving the traffic class
+    out of the key is what makes "one configuration, several traffic classes" a
+    property the checker can state and verify.
+    """
+    return (
+        config.mode,
+        config.encryption,
+        config.integrity,
+        config.dh_group,
+        bool(config.pfs),
+        int(config.ip_version),
+    )
 
 
 def check_coverage(
@@ -430,6 +623,42 @@ def check_coverage(
         len(combos) == 4,
         f"{len(combos)}/4 combinations: {sorted(combos)}",
     )
+    # -- configuration and traffic class must not be collinear -------------
+    # If every configuration carried exactly one traffic class, a classifier
+    # could score well by recognising the IPsec configuration rather than the
+    # traffic ("all web = GCM, all video = CBC").  Both directions are checked.
+    by_configuration: dict[tuple[Any, ...], set[TrafficClass]] = {}
+    by_traffic: dict[TrafficClass, set[tuple[Any, ...]]] = {}
+    for config in configs:
+        key = configuration_key(config)
+        by_configuration.setdefault(key, set()).add(config.traffic_type)
+        by_traffic.setdefault(config.traffic_type, set()).add(key)
+
+    single_class = [key for key, classes in by_configuration.items() if len(classes) < 2]
+    add(
+        "config_traffic_cross",
+        "Every configuration runs more than one traffic class",
+        bool(by_configuration) and not single_class,
+        (
+            f"{len(by_configuration) - len(single_class)}/{len(by_configuration)} "
+            "configurations carry 2+ traffic classes"
+            if by_configuration
+            else "none"
+        ),
+    )
+
+    single_config = [traffic for traffic, keys in by_traffic.items() if len(keys) < 2]
+    add(
+        "traffic_config_cross",
+        "Every traffic class runs under more than one configuration",
+        bool(by_traffic) and not single_config,
+        (
+            f"{len(by_traffic) - len(single_config)}/{len(by_traffic)} "
+            "traffic classes run on 2+ configurations"
+            if by_traffic
+            else "none"
+        ),
+    )
     return checks
 
 
@@ -470,6 +699,7 @@ __all__ = [
     "MatrixEntry",
     "build_matrix",
     "check_coverage",
+    "configuration_key",
     "coverage_report",
     "render_coverage",
 ]

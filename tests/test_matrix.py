@@ -9,6 +9,7 @@ from fera.dataset.matrix import (
     CoverageCheck,
     build_matrix,
     check_coverage,
+    configuration_key,
     coverage_report,
     render_coverage,
 )
@@ -88,6 +89,54 @@ def test_required_traffic_classes_are_all_present(matrix) -> None:
     present = {config.traffic_type for config in matrix}
     for traffic_class in REQUIRED_TRAFFIC_CLASSES:
         assert traffic_class in present, f"{traffic_class.value} missing from the matrix"
+
+
+def test_configuration_and_traffic_class_are_not_collinear(matrix) -> None:
+    """A configuration must never imply a single traffic class.
+
+    Perfectly collinear design ("all web = GCM, all video = CBC") lets a
+    classifier score well by recognising the IPsec configuration instead of the
+    traffic, which makes any held-out-configuration evaluation meaningless.
+    Both directions are asserted: every configuration carries several classes
+    and every class runs under several configurations.
+    """
+    by_configuration: dict[tuple[object, ...], set[TrafficClass]] = {}
+    by_traffic: dict[TrafficClass, set[tuple[object, ...]]] = {}
+    for config in matrix:
+        key = configuration_key(config)
+        by_configuration.setdefault(key, set()).add(config.traffic_type)
+        by_traffic.setdefault(config.traffic_type, set()).add(key)
+
+    single_class = {key: classes for key, classes in by_configuration.items() if len(classes) < 2}
+    assert not single_class, f"configuration(s) carrying only one traffic class: {single_class}"
+    single_config = {key: keys for key, keys in by_traffic.items() if len(keys) < 2}
+    assert not single_config, f"traffic class(es) on only one configuration: {single_config}"
+
+
+def test_coverage_reports_the_configuration_traffic_crossing(matrix) -> None:
+    checks = {check.key: check for check in check_coverage(matrix)}
+    assert checks["config_traffic_cross"].passed is True
+    assert checks["config_traffic_cross"].evidence.startswith("15/15")
+    assert checks["traffic_config_cross"].passed is True
+    assert checks["traffic_config_cross"].evidence.startswith("6/6")
+
+
+def test_coverage_detects_a_confounded_matrix() -> None:
+    """The new checks must fail on a confounded subset, not just pass on the good one."""
+    icmp_only = [config for config in build_matrix() if config.traffic_type is TrafficClass.ICMP]
+    checks = {check.key: check for check in check_coverage(icmp_only)}
+    assert checks["config_traffic_cross"].passed is False
+    # One class across five configurations is fine in the other direction.
+    assert checks["traffic_config_cross"].passed is True
+
+
+def test_every_matrix_entry_is_crossed_with_a_second_class(matrix) -> None:
+    """Each of the curated rows keeps its traffic class and gains a second one."""
+    by_configuration: dict[tuple[object, ...], set[TrafficClass]] = {}
+    for config in matrix:
+        by_configuration.setdefault(configuration_key(config), set()).add(config.traffic_type)
+    assert len(by_configuration) == len(MATRIX_ENTRIES) // 2
+    assert all(len(classes) == 2 for classes in by_configuration.values())
 
 
 def test_matrix_contains_expected_algorithm_and_pfs_combinations(matrix) -> None:

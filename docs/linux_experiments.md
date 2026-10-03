@@ -110,20 +110,28 @@ Generate the experiment matrix:
 python scripts/generate_experiment_matrix.py --print-only
 ```
 
-### 4.1 Known matrix defect — fix before collecting real captures
+### 4.1 Configuration / traffic-class crossing — resolved
 
-**The current curated matrix is confounded.** All 15 entries map to 15
-configurations, and **every configuration currently carries exactly one traffic
-class.** Configuration and traffic class are perfectly collinear.
+**The shipped matrix is no longer confounded.** The 15 curated configurations are
+each repeated with a second traffic class (30 entries), so:
 
-The consequence is concrete: any measured difference between configurations is
-*unidentifiable* from a difference between traffic classes. A result attributing
-behaviour to, say, the cipher suite could be entirely an artefact of that suite
-never having been paired with ICMP or VoIP traffic.
+* **every configuration carries two traffic classes**, and
+* **every traffic class runs under at least four configurations** (6 classes,
+  4–6 configurations each).
 
-A test pins this so it cannot drift silently. **Do not collect representative
-real captures until each configuration has been paired with more than one
-traffic class.**
+Configuration and traffic class are therefore not collinear: a measured
+difference between configurations can no longer be an artefact of a suite that
+happened never to have been paired with ICMP or VoIP traffic, and a classifier
+cannot score well by recognising the configuration instead of the traffic.
+
+This is *computed*, not asserted by hand: `check_matrix_coverage.py` reports the
+`config_traffic_cross` and `traffic_config_cross` requirements, and both fail if
+the matrix ever regresses to one class per configuration. A test asserts the same
+property through the dry-run planner.
+
+> Note: crossing doubles the capture count for the same coverage (15 → 30 real
+> sessions). That is the price of an identifiable experiment, and it is cheaper
+> than the full Cartesian product.
 
 ### 4.2 Dry run
 
@@ -265,7 +273,9 @@ empirical evidence. `docs/limitations.md` is the canonical list.
 - Wire `netem`, `preflight`, `gates`, and `manifest` into `run_experiment.py`
   (removing the manual ordering in §5).
 - Add traffic/capture lifecycle management and repeated-session orchestration.
-- **Fix the matrix confounding in §4.1.**
+- ~~**Fix the matrix confounding in §4.1.**~~ Done — every configuration is now
+  crossed with a second traffic class, enforced by the `config_traffic_cross` /
+  `traffic_config_cross` coverage checks.
 - Add the artifact-directory layout and a single reproducibility CLI.
 - Perform the first real run, then replace this document's pending items with
   measured results.

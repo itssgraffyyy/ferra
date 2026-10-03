@@ -95,7 +95,7 @@ def test_configuration_id_is_independent_of_traffic_class() -> None:
 
     The id is built from the IPsec parameters only.  Whether two *entries* ever
     share one is a property of the curated matrix, not of this function - see
-    test_the_curated_matrix_confounds_configuration_with_traffic_class.
+    test_the_curated_matrix_does_not_confound_configuration_with_traffic_class.
     """
     plan = plan_experiments(repeats=1)
     for item in plan["experiments"]:
@@ -103,32 +103,38 @@ def test_configuration_id_is_independent_of_traffic_class() -> None:
         assert item["session_id"].endswith(f"--r{item['repeat_id']:02d}")
 
 
-def test_the_curated_matrix_confounds_configuration_with_traffic_class() -> None:
-    """A known limitation of the shipped matrix, pinned so it cannot drift.
+def test_the_curated_matrix_does_not_confound_configuration_with_traffic_class() -> None:
+    """Configuration and traffic class must not be collinear.
 
-    Every one of the matrix's 15 configurations carries exactly one traffic
-    class.  Configuration and class are therefore *perfectly confounded*: a
-    classifier could score well by recognising the configuration rather than
-    the traffic, and no held-out-configuration evaluation on this matrix could
-    separate the two.
+    If every configuration carried exactly one traffic class, a classifier
+    could score well by recognising the configuration rather than the traffic
+    ("all web = GCM, all video = CBC"), and no held-out-configuration
+    evaluation could tell the two apart.
 
-    This is a property of the existing curated matrix, not of the planner.  It
-    is pinned here rather than silently assumed away because the problem
-    statement explicitly warns against exactly this design ("all web = GCM, all
-    video = CBC" style confounding).  Fixing it means changing the matrix, which
-    is a separate decision.
+    The planner deliberately groups on a configuration id that *excludes* the
+    traffic class (see test_configuration_id_is_independent_of_traffic_class),
+    so a crossed matrix shows up here as one configuration id carrying several
+    classes - and, in the other direction, as every class running under several
+    configurations.  The matrix itself is checked by the config_traffic_cross /
+    traffic_config_cross coverage requirements.
     """
     plan = plan_experiments(repeats=1)
     by_config: dict[str, set[str]] = {}
+    by_class: dict[str, set[str]] = {}
     for item in plan["experiments"]:
         by_config.setdefault(item["configuration_id"], set()).add(item["traffic_class"])
-    counts = sorted(len(classes) for classes in by_config.values())
+        by_class.setdefault(item["traffic_class"], set()).add(item["configuration_id"])
 
-    # Assert the truth of today so a future matrix change is visible here.
-    assert counts, "the matrix produced no configurations"
-    assert max(counts) == 1, (
-        f"the matrix now has a configuration with several classes {counts}; "
-        "update this test and the known-limitation note together"
+    assert by_config, "the matrix produced no configurations"
+    too_narrow = {key: classes for key, classes in by_config.items() if len(classes) < 2}
+    assert not too_narrow, (
+        f"configuration(s) carry exactly one traffic class {too_narrow}; "
+        "cross each configuration with a second class so the two stay separable"
+    )
+    too_few_configs = {key: keys for key, keys in by_class.items() if len(keys) < 2}
+    assert not too_few_configs, (
+        f"traffic class(es) only ever run under one configuration {too_few_configs}; "
+        "spread every class over at least two configurations"
     )
 
 
@@ -136,7 +142,11 @@ def test_plan_reports_distinct_configuration_count() -> None:
     plan = plan_experiments(repeats=2)
     counts = plan["counts"]
     assert counts["distinct_configurations"] == len(plan["configurations"])
-    assert counts["planned_sessions"] == counts["distinct_configurations"] * 2
+    # Every configuration is crossed with a second traffic class, so sessions
+    # scale with matrix *entries*, not with distinct configurations.
+    assert counts["planned_sessions"] == counts["matrix_configurations"] * 2
+    assert counts["distinct_configurations"] < counts["matrix_configurations"]
+    assert counts["distinct_session_ids"] == counts["planned_sessions"]
 
 
 def test_plan_includes_coverage_of_the_matrix() -> None:

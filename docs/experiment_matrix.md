@@ -12,6 +12,9 @@ used in FERA Stage 1.
 3. **PFS Variations**: Evaluate tunnels with Perfect Forward Secrecy enabled (DH re-negotiated on ESP child SAs) and disabled.
 4. **Diverse Traffic Classes**: Pair cryptographic combinations with multiple application traffic profiles (Control, ICMP, Web, VoIP, Video, Messaging, Email).
 5. **Deterministic Matrix Generation**: Ensure matrix generation produces identical experiment IDs and configurations given the same parameters.
+6. **No Configuration / Traffic-Class Confounding**: every configuration must carry **more than one** traffic class *and* every traffic class must run under **more than one** configuration. Otherwise a classifier can score well by recognising the IPsec configuration instead of the traffic ("all web = GCM, all video = CBC"), and no held-out-configuration evaluation can separate the two effects.
+
+Requirement 6 is verified, not asserted: `scripts/check_matrix_coverage.py` reports the `config_traffic_cross` and `traffic_config_cross` checks, both computed from the generated configurations.
 
 ---
 
