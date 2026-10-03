@@ -62,7 +62,7 @@ sockets now come up unprivileged.
   userspace does not). Install with
   `sudo apt-get install libstrongswan-standard-plugins`.
 
-### 1.2 Gate wiring: resolved; netem still manual
+### 1.2 Gate and netem wiring: resolved
 
 `scripts/run_experiment.py` no longer takes `integration_verified` on trust. It
 used to pass a literal `True` into the ground truth document, so **any run that
@@ -93,10 +93,28 @@ rather than **no SA exists**; and traffic that generated successfully does not
 satisfy the protected-payload gate on its own, since bytes moving proves nothing
 about which path they took.
 
-`fera.experiment.netem` is still **not** wired into the driver: the netem
-procedure in §5 remains manual, applied and cleaned up by hand around each
-`run_experiment.py` invocation. The manifest, preflight-style environment check
-and gates are wired.
+`fera.experiment.netem` is now **wired into the driver**:
+
+```bash
+sudo python scripts/run_experiment.py --config <experiment> \
+    --network-condition jitter            # baseline | loss | jitter | latency
+```
+
+The qdisc is applied after capture starts and removed in a `finally` block, so
+it is cleaned up even when the experiment fails — a qdisc left behind silently
+changes the next run's behaviour, which is how "the second experiment behaved
+differently from the first" happens. Use `--network-interface` to target an
+interface other than the capture interface.
+
+Each run writes `network_condition.json` and the ground truth embeds the same
+document. `applied` is set **only** when `tc` actually succeeded: a condition
+that was requested but could not be applied is recorded as not applied and the
+run proceeds unimpaired, so no artefact can claim an impairment that did not
+happen. The `baseline` condition issues no command at all, because replacing an
+empty qdisc would itself clobber whatever a previous run left behind.
+
+Planning still stays in `fera.experiment.netem`, which executes nothing by
+design; the runner performs the execution.
 
 ---
 
@@ -199,7 +217,7 @@ as "the plan is coherent", never as "the experiment succeeded".
 
 ---
 
-## 5. Netem robustness (manual, until wired)
+## 5. Netem robustness (wired)
 
 `src/fera/experiment/netem.py` **plans**; it never executes. Plan the conditions:
 
@@ -217,7 +235,15 @@ for row in plan_matrix(interface="veth-a"):
 | `latency` | 50 ms | added delay |
 | `jitter` | 20 ms delay ±10 ms | variable delay |
 
-Apply and clean up around **each** run:
+Apply and clean up around **each** run, with the driver doing both:
+
+```bash
+# The driver applies the qdisc, runs the experiment, and removes the qdisc
+# afterwards -- including when the experiment fails.
+sudo python scripts/run_experiment.py --experiment-id <id> --network-condition loss
+```
+
+To shape the traffic by hand instead, the same ordering still applies:
 
 ```bash
 # baseline: deliberately do nothing (see 5.1)
@@ -324,8 +350,11 @@ empirical evidence. `docs/limitations.md` is the canonical list.
 
 ## 9. Outstanding work
 
-- Wire `netem`, `preflight`, `gates`, and `manifest` into `run_experiment.py`
-  (removing the manual ordering in §5).
+- ~~Wire `netem`, `preflight`, `gates`, and `manifest` into `run_experiment.py`.~~
+  Done — the runner derives `integration_verified` from observed evidence
+  (§1.2), and `--network-condition` applies and cleans up the netem qdisc
+  (§5). The `ExperimentManifest` type in `fera/experiment/manifest.py` is still
+  unused dead code and can be deleted or wired separately.
 - Add traffic/capture lifecycle management and repeated-session orchestration.
 - ~~**Fix the matrix confounding in §4.1.**~~ Done — every configuration is now
   crossed with a second traffic class, enforced by the `config_traffic_cross` /

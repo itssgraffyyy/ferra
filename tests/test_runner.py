@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from conftest import SWANCTL_ESTABLISHED, TSHARK_PHS, ScriptedRunner, make_config
@@ -21,6 +23,13 @@ XFRM_POLICY = """src 10.20.0.0/24 dst 10.30.0.0/24
 \tsrc 10.20.0.0/24 dst 10.30.0.0/24
 \t\tdir out priority 0
 """
+
+
+#: The scripted runner's default tools plus ``tc``, so a netem test can actually
+#: apply a qdisc.  Dropping a tool from this list (e.g. the capture tool) makes
+#: the run fail before it ever reaches the traffic stage, which masks whatever
+#: the test was actually about.
+TOOLS_WITH_TC = ("swanctl", "tcpdump", "tshark", "ping", "curl", "iperf3", "ip", "ipsec", "tc")
 
 
 def full_evidence_responses() -> list[tuple[str, int, str]]:
@@ -172,6 +181,100 @@ def test_ike_success_alone_never_reports_dataset_eligible(
     assert gates["evidence_gates"]["ike_sa_verified"] is True
     assert gates["dataset_eligible"] is False
     assert gates["stage"] != "MANIFEST_FINALIZED"
+
+
+def test_baseline_condition_never_runs_tc(sandbox_paths, topology, allow_capture) -> None:
+    """A 'no impairment' run must not touch the qdisc at all.
+
+    Applying an empty netem would still replace whatever qdisc a previous run
+    left behind -- a side effect a baseline run should not have.
+    """
+    config = make_config(capture_duration_s=1.0)
+    runner = ScriptedRunner(
+        responses=full_evidence_responses(), available_tools=TOOLS_WITH_TC
+    )
+    outcome = make_runner(config, sandbox_paths, topology, runner).run()
+
+    assert outcome.status is RunStatus.SUCCESS, outcome.message
+    assert not any("qdisc" in " ".join(command) for command in runner.commands)
+
+    from fera.dataset.ground_truth import load_ground_truth
+
+    document = load_ground_truth(outcome.ground_truth_path).to_dict()
+    condition = document["capture"]["details"]["network_condition"]
+    assert condition["name"] == "baseline"
+    assert condition["applied"] is False
+
+
+def test_applied_condition_is_recorded_and_cleaned_up(sandbox_paths, topology, allow_capture) -> None:
+    """The qdisc is applied for the run and removed afterwards."""
+    config = make_config(capture_duration_s=1.0)
+    runner = ScriptedRunner(
+        responses=full_evidence_responses(), available_tools=TOOLS_WITH_TC
+    )
+    outcome = make_runner(
+        config, sandbox_paths, topology, runner, network_condition="jitter"
+    ).run()
+
+    assert outcome.status is RunStatus.SUCCESS, outcome.message
+    qdisc_commands = [" ".join(c) for c in runner.commands if "qdisc" in " ".join(c)]
+    assert any("replace" in c for c in qdisc_commands), qdisc_commands
+    assert any("del" in c for c in qdisc_commands), qdisc_commands
+    # Cleanup must follow the traffic, not precede it.
+    assert runner.commands.index(next(c for c in runner.commands if "qdisc del" in " ".join(c))) > (
+        runner.commands.index(next(c for c in runner.commands if "ping" in " ".join(c)))
+    )
+
+    recorded = json.loads((outcome.experiment_dir / "network_condition.json").read_text())
+    assert recorded["name"] == "jitter"
+    assert recorded["applied"] is True
+    assert recorded["delay_ms"] == 20.0
+
+
+def test_condition_that_could_not_be_applied_is_not_recorded_as_applied(
+    sandbox_paths, topology, allow_capture
+) -> None:
+    """`tc` failing must not leave the artefact claiming an impairment."""
+    config = make_config(capture_duration_s=1.0)
+    runner = ScriptedRunner(
+        responses=[
+            *full_evidence_responses(),
+            ("tc qdisc", 1, ""),
+        ],
+        available_tools=TOOLS_WITH_TC,
+    )
+    outcome = make_runner(
+        config, sandbox_paths, topology, runner, network_condition="loss"
+    ).run()
+
+    from fera.dataset.ground_truth import load_ground_truth
+
+    document = load_ground_truth(outcome.ground_truth_path).to_dict()
+    condition = document["capture"]["details"]["network_condition"]
+    assert condition["name"] == "loss"
+    assert condition["applied"] is False
+    # Nothing was applied, so there is nothing to clean up either.
+    assert not any("qdisc del" in " ".join(c) for c in runner.commands)
+
+
+def test_condition_is_cleaned_up_even_when_the_experiment_fails(
+    sandbox_paths, topology, allow_capture
+) -> None:
+    """A failed run must not leave a qdisc behind for the next experiment."""
+    config = make_config(capture_duration_s=1.0)
+    runner = ScriptedRunner(
+        responses=[
+            ("--list-sas", 1, ""),  # the SA never comes up
+            ("tc qdisc", 0, ""),
+        ],
+        available_tools=TOOLS_WITH_TC,
+    )
+    outcome = make_runner(
+        config, sandbox_paths, topology, runner, network_condition="latency"
+    ).run()
+
+    assert outcome.status is RunStatus.FAILED
+    assert any("qdisc del" in " ".join(c) for c in runner.commands), runner.commands
 
 
 def test_successful_run_produces_a_valid_dataset_sample(sandbox_paths, topology, allow_capture) -> None:
