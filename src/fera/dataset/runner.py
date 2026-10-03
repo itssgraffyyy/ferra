@@ -40,6 +40,7 @@ from ..common.paths import ProjectPaths, default_paths
 from ..common.process import BaseRunner, SubprocessRunner
 from ..common.serialization import write_json, write_yaml
 from ..common.versions import collect_tool_versions, platform_summary
+from ..experiment.gates import GateEvidence, derive_gate_state, probe_xfrm
 from ..testbed.environment import EnvironmentReport, check_environment
 from ..testbed.ipsec_control import IpsecController, SaState
 from ..testbed.namespaces import default_socket_dir, vici_socket_path
@@ -50,6 +51,7 @@ from ..traffic.registry import generate_traffic, get_generator
 from ..traffic.servers import responder_command
 from .ground_truth import build_ground_truth
 from .manifest import build_manifest, write_manifest
+from .matrix import configuration_key
 from .schema import ExperimentConfig, require_topology_compatibility
 
 logger = get_logger(__name__)
@@ -122,6 +124,8 @@ class RunOutcome:
     validation: Mapping[str, Any] | None = None
     sa: Mapping[str, Any] | None = None
     traffic: Mapping[str, Any] | None = None
+    #: Evidence-gate state for this run (see :mod:`fera.experiment.gates`).
+    gates: Mapping[str, Any] | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -143,6 +147,7 @@ class RunOutcome:
             "validation": dict(self.validation) if self.validation else None,
             "sa": dict(self.sa) if self.sa else None,
             "traffic": dict(self.traffic) if self.traffic else None,
+            "gates": dict(self.gates) if self.gates else None,
         }
 
 
@@ -345,10 +350,17 @@ class ExperimentRunner:
                 or "capture did not pass validation"
             )
 
+        gates = self._derive_gates(
+            sa_a=sa_a,
+            validation=validation,
+            traffic_result=traffic_result,
+            valid_capture=valid_capture,
+        )
         document = self._build_ground_truth(
             execution_status=(RunStatus.SUCCESS.value if valid_capture else RunStatus.FAILED.value),
             valid_capture=valid_capture,
-            integration_verified=True,
+            integration_verified=gates["real_ipsec_verified"],
+            gate_state=gates,
             error_code=failure_code,
             error_message=failure_message,
             capture_result=capture_result,
@@ -359,6 +371,15 @@ class ExperimentRunner:
         )
         ground_truth_file = document.write(self.ground_truth_path)
         logger.info("ground truth written: %s", ground_truth_file)
+        write_json(self.experiment_dir / "gates.json", gates)
+        if not gates["real_ipsec_verified"]:
+            # The capture may still be a valid file, but a run that did not prove
+            # it crossed ESP must not be advertised as real-IPsec evidence.
+            logger.warning(
+                "run %s is not real-IPsec verified; missing evidence gates: %s",
+                self.config.experiment_id,
+                ", ".join(gates["missing_gates"]),
+            )
         self._maybe_update_manifest()
 
         return RunOutcome(
@@ -370,16 +391,56 @@ class ExperimentRunner:
             pcap_path=self.pcap_path,
             ground_truth_path=ground_truth_file,
             valid_capture=valid_capture,
-            integration_verified=True,
+            integration_verified=gates["real_ipsec_verified"],
             duration_s=time.monotonic() - self._started_monotonic,
             capture=capture_result.to_dict(),
             validation=validation.to_dict(),
             sa={"initiator": sa_a.to_dict(), "responder": sa_b.to_dict()},
             traffic=traffic_result.to_dict(),
+            gates=gates,
         )
 
 
     # -- pipeline steps ---------------------------------------------------
+    def _derive_gates(
+        self,
+        *,
+        sa_a: SaState,
+        validation: CaptureValidationResult,
+        traffic_result: TrafficResult,
+        valid_capture: bool,
+    ) -> dict[str, Any]:
+        """Collect observed evidence and hand it to the gates module.
+
+        ``integration_verified`` used to be a literal ``True`` here, so any run
+        that produced a parseable capture claimed real-IPsec integration even
+        when the payload had crossed a cleartext path — the precise failure
+        :mod:`fera.experiment.gates` was written to catch.  It is now derived
+        from observations only.
+        """
+        xfrm = probe_xfrm(self.command_runner)
+        evidence = GateEvidence(
+            ike_established=sa_a.established,
+            child_installed=sa_a.child_installed,
+            # None when the probe could not run, so "not probed" is never
+            # silently reported as "probed and empty".
+            xfrm_state=bool(xfrm["state_entries"]) if xfrm["state_available"] else None,
+            xfrm_policy=bool(xfrm["policy_entries"]) if xfrm["policy_available"] else None,
+            protected_payload=traffic_result.generated,
+            esp_observed=validation.esp_detected,
+            details={
+                "experiment_id": self.config.experiment_id,
+                # Same definition of "same configuration" the coverage checker
+                # uses, so gate records join to the matrix without translation.
+                "configuration_id": repr(configuration_key(self.config)),
+                "traffic_class": self.config.traffic_type.value,
+                "xfrm": xfrm,
+                "sa": sa_a.to_dict(),
+                "packets": validation.packets,
+            },
+        )
+        return derive_gate_state(evidence, failed=not valid_capture)
+
     def _apply_configuration(self, generated: Any, secrets_file: Path | None) -> None:
         """Load the generated connection/credential files on both endpoints."""
         for key in ("a", "b"):
@@ -554,6 +615,7 @@ class ExperimentRunner:
         integration_verified: bool,
         error_code: ErrorCode | None,
         error_message: str | None,
+        gate_state: Mapping[str, Any] | None = None,
         capture_result: CaptureResult | None = None,
         validation: CaptureValidationResult | None = None,
         sa_states: Mapping[str, SaState] | None = None,
@@ -577,6 +639,7 @@ class ExperimentRunner:
             dry_run=self.settings.dry_run,
             valid_capture=valid_capture,
             integration_verified=integration_verified,
+            gate_state=gate_state,
             error_code=error_code.value if error_code else None,
             error_message=error_message,
             pcap_path=str(self.pcap_path),

@@ -234,11 +234,141 @@ class ExperimentState:
         )
 
 
+@dataclass(frozen=True)
+class GateEvidence:
+    """What was actually observed about one run, gate by gate.
+
+    Each field is an observation, never an assumption: a field is True only
+    because something measured it.  ``xfrm_state``/``xfrm_policy`` are ``None``
+    when the probe could not run, which is deliberately distinct from ``False``
+    ("probed, and empty").  Collapsing the two would make a host that cannot
+    read XFRM look identical to a host that proved no SA exists.
+    """
+
+    ike_established: bool = False
+    child_installed: bool = False
+    xfrm_state: bool | None = None
+    xfrm_policy: bool | None = None
+    protected_payload: bool = False
+    esp_observed: bool = False
+    details: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ike_sa_established": self.ike_established,
+            "child_sa_installed": self.child_installed,
+            "xfrm_state_present": self.xfrm_state,
+            "xfrm_policy_present": self.xfrm_policy,
+            "protected_payload_crossed": self.protected_payload,
+            "esp_observed": self.esp_observed,
+            "details": dict(self.details),
+        }
+
+
+def _xfrm_entries(output: str) -> int:
+    """Count entries in ``ip xfrm`` output.
+
+    Every entry begins with a ``src`` line in the first column and continues with
+    *indented* lines (``ip xfrm`` prints one block per SA/policy).  Matching only
+    at column 0 is therefore what counts entries: stripping the line first would
+    also count each entry's continuation lines and inflate the count, which
+    would let a table with a single SA report several and make an empty-table
+    check unreliable.
+    """
+    return sum(1 for line in output.splitlines() if line.startswith("src "))
+
+
+def probe_xfrm(runner: Any) -> dict[str, Any]:
+    """Probe the local XFRM state and policy tables through ``runner``.
+
+    ``EVIDENCE_GATES`` demands ``xfrm_state_verified`` and
+    ``xfrm_policy_verified`` before a run may claim real IPsec evidence, but
+    nothing in the repository ever collected that evidence, so both gates could
+    never be satisfied and the whole gate machinery was unreachable.
+
+    A run that negotiates IKE and then sees its payload cross a cleartext path is
+    exactly the failure these gates exist to catch, and ``ip xfrm state`` is the
+    direct observation of whether SAs actually exist.
+
+    A host that cannot read XFRM yields ``available=False`` with a reason rather
+    than raising: a missing probe is not the same as a missing SA.
+    """
+    results: dict[str, Any] = {}
+    reasons: list[str] = []
+    for table in ("state", "policy"):
+        result = runner.run(["ip", "xfrm", table], timeout=10.0, check=False)
+        ok = bool(result.ok)
+        entries = _xfrm_entries(result.stdout or "") if ok else 0
+        results[f"{table}_entries"] = entries
+        results[f"{table}_available"] = ok
+        if not ok:
+            detail = (result.stderr or "").strip()
+            reasons.append(f"ip xfrm {table} failed (rc={result.returncode}): {detail}")
+    results["available"] = not reasons
+    results["reason"] = "; ".join(reasons)
+    return results
+
+
+def _gate_flags(evidence: GateEvidence) -> dict[str, bool]:
+    """Map observed evidence onto the six evidence gates."""
+    return {
+        "ike_sa_verified": evidence.ike_established,
+        "child_sa_verified": evidence.child_installed,
+        "xfrm_state_verified": bool(evidence.xfrm_state),
+        "xfrm_policy_verified": bool(evidence.xfrm_policy),
+        # Traffic proves nothing about ESP on its own, so a protected payload
+        # only counts when a CHILD_SA was actually installed.
+        "protected_payload_verified": (
+            evidence.protected_payload and evidence.child_installed
+        ),
+        "esp_verified": evidence.esp_observed,
+    }
+
+
+def derive_gate_state(
+    evidence: GateEvidence,
+    *,
+    experiment_id: str = "",
+    configuration_id: str = "",
+    session_id: str = "",
+    traffic_class: str = "",
+    failed: bool = False,
+) -> dict[str, Any]:
+    """Turn observed evidence into a serialised gate state.
+
+    The decision is made here — in the gates module that documents the contract
+    — rather than being re-derived by the caller, so ``integration_verified`` can
+    only ever mean *every gate was satisfied by an observation*.
+    """
+    state = ExperimentState(
+        experiment_id=experiment_id,
+        session_id=session_id,
+        configuration_id=configuration_id,
+        traffic_class=traffic_class,
+    )
+    for name, satisfied in _gate_flags(evidence).items():
+        if satisfied:
+            state.satisfy(name)
+    state.evidence = evidence.to_dict()
+    if failed:
+        state.fail("run failed before the evidence gates were satisfied")
+    elif state.real_ipsec_verified:
+        state.advance(Stage.MANIFEST_FINALIZED)
+    else:
+        # Deliberately not advanced: an unmet gate must leave the run short of
+        # MANIFEST_FINALIZED, which is what ``assert_dataset_eligible`` demands.
+        state.notes.append("evidence gates unmet: " + ", ".join(state.missing_gates))
+    return state.to_dict()
+
+
 __all__ = [
     "DATASET_ELIGIBLE_STAGE",
     "EVIDENCE_GATES",
     "GATE_FOR_STAGE",
+    "GateEvidence",
     "MANIFEST_SCHEMA",
     "ExperimentState",
     "Stage",
+    "derive_gate_state",
+    "probe_xfrm",
 ]

@@ -68,6 +68,7 @@ def build_ground_truth(
     dry_run: bool = False,
     valid_capture: bool = False,
     integration_verified: bool = False,
+    gate_state: Mapping[str, Any] | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
     pcap_path: str | None = None,
@@ -103,6 +104,10 @@ def build_ground_truth(
             "error_message": error_message,
             "reusable_as_dataset_sample": bool(valid_capture and not dry_run),
         },
+        # The six ordered evidence gates and which of them were satisfied.  A
+        # reader can therefore check the claim rather than take it on trust:
+        # ``integration_verified`` is True only when ``missing_gates`` is empty.
+        "evidence_gates": dict(gate_state) if gate_state else None,
         "ipsec": {
             "mode": config.mode.value,
             "ike_version": config.ike_version,
