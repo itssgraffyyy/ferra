@@ -167,3 +167,36 @@ def test_build_manifest_on_empty_directory(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "samples         : 0" in result.stdout
+
+
+def test_run_pipeline_plans_every_stage_without_executing(tmp_path: Path) -> None:
+    """The single entry point must compose all five stages and exit 0.
+
+    A dry run still writes the experiment *specifications* -- they are plans, not
+    results -- so the experiment stage has something to plan against.
+    """
+    result = run_script(
+        "run_pipeline.py",
+        "--dry-run",
+        "--experiments-dir", str(tmp_path / "experiments"),
+        "--raw-dir", str(tmp_path / "raw"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "pipeline summary" in result.stdout
+    for stage in ("matrix", "experiments", "manifest", "dataset", "verify"):
+        assert stage in result.stdout, stage
+    # The matrix really was written, and nothing was captured.
+    assert list((tmp_path / "experiments").glob("exp_*.yaml"))
+    assert not list((tmp_path / "raw").glob("*/capture.pcap"))
+
+
+def test_run_pipeline_can_skip_a_stage(tmp_path: Path) -> None:
+    result = run_script(
+        "run_pipeline.py",
+        "--dry-run",
+        "--skip", "experiments",
+        "--experiments-dir", str(tmp_path / "experiments"),
+        "--raw-dir", str(tmp_path / "raw"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "experiments: SKIPPED" in result.stdout

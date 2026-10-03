@@ -421,10 +421,11 @@ empirical evidence. `docs/limitations.md` is the canonical list.
   crossed with a second traffic class, enforced by the `config_traffic_cross` /
   `traffic_config_cross` coverage checks.
 - ~~Add the artifact-directory layout and a single reproducibility CLI.~~
-  Partly done — `scripts/verify_dataset.py` records the source revision (with a
-  dirty-tree flag) and re-hashes every capture the manifest lists, exiting
-  non-zero when anything fails to verify (§6.0). A single *entry point* that runs
-  matrix → experiments → manifest → dataset is still outstanding.
+  Done — `scripts/run_pipeline.py` runs matrix → experiments → manifest →
+  dataset → verify in one command (with `--dry-run` to plan without executing and
+  `--skip` for a single stage), and `scripts/verify_dataset.py` records the source
+  revision and re-hashes every capture, exiting non-zero when anything fails
+  (§6.0).
 - Perform the first real run, then replace this document's pending items with
   measured results.
 

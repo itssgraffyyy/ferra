@@ -101,9 +101,18 @@ python scripts/check_matrix_coverage.py
 sudo python scripts/setup_netns_testbed.py --apply --start-charon
 sudo python scripts/run_experiment.py --config configs/experiments/exp_000_*.yaml --update-manifest
 
+# 3a. …or the whole pipeline in one command (matrix → experiments → manifest →
+#     dataset → verify), with a final provenance and hash check
+sudo python scripts/run_pipeline.py --repeats 3 --capture-interface veth-a
+python scripts/run_pipeline.py --dry-run      # plans everything, executes nothing
+
 # 4. Dataset index + sanity check of a single capture
 python scripts/build_manifest.py
 python scripts/validate_capture.py --pcap data/raw/exp_000_*/capture.pcap
+
+# 4a. Verify provenance: which commit produced the data, and do the captures
+#     still hash to what the runs recorded?  Non-zero exit if anything changed.
+python scripts/verify_dataset.py
 
 # 5. Labelled ML dataset (features + ground truth, grouped train/val/test splits)
 python scripts/build_dataset.py
