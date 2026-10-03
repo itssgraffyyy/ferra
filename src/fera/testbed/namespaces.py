@@ -16,6 +16,7 @@ the host pair ``10.10.10.1/32 <-> 10.10.10.2/32``.
 from __future__ import annotations
 
 import os
+import shlex
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -149,20 +150,44 @@ def vici_socket_path(runtime_dir: Path | str, key: str) -> Path:
     return Path(runtime_dir) / f"charon-{key}.vici"
 
 
+CHARON_RUNTIME_DIR = "/var/run"
+
+
 def charon_command(
     topology: TestbedTopology,
     key: str,
     *,
     strongswan_conf: Path | str,
     charon_binary: str = "/usr/lib/ipsec/charon",
+    runtime_dir: str = CHARON_RUNTIME_DIR,
 ) -> list[str]:
-    """Full command that starts a dedicated charon instance for an endpoint."""
+    """Full command that starts a dedicated charon instance for an endpoint.
+
+    Each instance is given a private ``/var/run`` before charon starts.  The
+    daemon hard-codes ``/var/run/charon.pid`` -- there is no ``charon.pidfile``
+    setting, the path is a string constant in the binary -- and it also binds
+    ``charon.ctl``, ``charon.lkp`` and ``charon.enfy`` there.  Two daemons that
+    share one runtime directory cannot both run: the second aborts with *charon
+    already running ('/var/run/charon.pid' exists)*, never opens its VICI
+    socket, and that endpoint is left with a socket file nobody listens on, so
+    every ``swanctl`` call to it fails while the testbed still reports success.
+    ``ip netns exec`` already gives the instance its own mount namespace, so a
+    tmpfs over the runtime directory is private to that daemon and disappears
+    with it.
+
+    The mount is best effort: if it is not permitted the daemon still starts,
+    exactly as before, instead of never starting at all.
+    """
     endpoint = topology.endpoint(key)
     return [
         *endpoint.wrap_command([]),
-        "env",
-        f"STRONGSWAN_CONF={strongswan_conf}",
-        charon_binary,
+        "sh",
+        "-c",
+        (
+            f"mount -t tmpfs -o rw tmpfs {shlex.quote(runtime_dir)} 2>/dev/null || true; "
+            f"exec env STRONGSWAN_CONF={shlex.quote(str(strongswan_conf))} "
+            f"{shlex.quote(charon_binary)}"
+        ),
     ]
 
 

@@ -34,7 +34,35 @@ Anything downstream of real execution — dataset statistics, model accuracy,
 OOD scores, privacy-attacker success rates — is currently **simulated or
 unmeasured.** `docs/limitations.md` tracks this in more detail.
 
-### 1.1 A known wiring gap
+### 1.1 What has now been exercised on a real Linux host
+
+The testbed bring-up has been run for real (WSL2 Linux 6.18, strongSwan
+5.9.13), inside an unprivileged user namespace (`unshare -Urnm`), and it
+surfaced four defects that no unit test could have caught. All four are fixed:
+
+| Defect | Symptom | Why no test caught it |
+|---|---|---|
+| `strongswan.conf` written with dotted keys | charon aborted with *syntax error, unexpected .*; **no daemon ever started** | the test asserted the rendered *string*, nobody parsed it |
+| `swanctl --uri` emitted *before* the subcommand | every control call failed with *unrecognized option '--uri'* | `IpsecController` had no tests at all |
+| both charons sharing `/var/run` | second daemon aborted (*charon already running*), its VICI socket was never opened | `--start-charon` reported success either way |
+| (fixed) filelog path used as a section key | a dotted log path is not a legal section name | same as row 1 |
+
+`ip netns`, XFRM policies/ESP SAs (`cbc(aes)`+`hmac(sha256)` and
+`aead "rfc4106(gcm(aes))"`), and both charon instances with reachable VICI
+sockets now come up unprivileged.
+
+**Still blocking a real run:**
+
+* `swanctl` accepts the VICI connection but never receives a reply, so
+  `--load-conns` / `--initiate` hang. Root cause not yet identified.
+* `libstrongswan-standard-plugins` is not installed, and it is the package
+  that ships `gcm.so` / `ctr.so` / `ccm.so`. Without it strongSwan cannot
+  negotiate `aes128gcm16`, so **every AES-GCM entry of the matrix is
+  unrunnable on such a host** (the kernel offers `rfc4106(gcm(aes))`; strongSwan
+  userspace does not). Install with
+  `sudo apt-get install libstrongswan-standard-plugins`.
+
+### 1.2 A known wiring gap
 
 `scripts/run_experiment.py` is the real execution driver. It **does not yet
 import or call** `fera.experiment.netem`, `preflight`, `gates`, or `manifest`.

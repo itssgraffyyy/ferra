@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from fera.common.errors import ConfigValidationError
+from fera.testbed.namespaces import charon_command
 from fera.testbed.topology import (
     DEFAULT_TOPOLOGY_DOCUMENT,
     Endpoint,
@@ -149,3 +150,27 @@ def test_swapped_initiator_roles_are_rejected() -> None:
     endpoints["b"]["role"] = "initiator"
     with pytest.raises(ConfigValidationError):
         topology_from_dict({**document, "endpoints": endpoints})
+
+
+def test_charon_command_gives_each_instance_a_private_runtime_dir() -> None:
+    """Two charons cannot share a runtime directory.
+
+    ``/var/run/charon.pid`` is a string constant in the binary (there is no
+    ``charon.pidfile`` setting), so the second daemon aborts with *charon
+    already running* and never opens its VICI socket: the endpoint looks
+    configured, but every ``swanctl`` call to it fails.
+    """
+    script = charon_command(default_topology(), "a", strongswan_conf="/tmp/a.conf")[-1]
+    assert "mount -t tmpfs -o rw tmpfs /var/run" in script
+    assert "exec env STRONGSWAN_CONF=/tmp/a.conf /usr/lib/ipsec/charon" in script
+
+
+def test_charon_command_starts_the_daemon_even_if_the_mount_is_refused() -> None:
+    script = charon_command(default_topology(), "b", strongswan_conf="/tmp/b.conf")[-1]
+    assert "|| true;" in script, "a refused mount must not stop charon from starting"
+
+
+def test_charon_command_is_wrapped_for_its_endpoint() -> None:
+    command = charon_command(default_topology(), "b", strongswan_conf="/tmp/b.conf")
+    assert command[:4] == ["ip", "netns", "exec", "fera-b"]
+    assert command[4] == "sh" and command[5] == "-c"
