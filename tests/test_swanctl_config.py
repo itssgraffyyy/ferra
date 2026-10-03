@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -195,8 +197,58 @@ def test_strongswan_conf_sets_private_vici_socket() -> None:
         vici_socket="/run/fera-testbed/charon-a.vici",
         log_file="/tmp/charon-a.log",
     )
-    assert "charon.plugins.vici.socket = unix:///run/fera-testbed/charon-a.vici" in rendered
-    assert "charon.filelog {" in rendered
+    assert "socket = unix:///run/fera-testbed/charon-a.vici" in rendered
+    assert "path = /tmp/charon-a.log" in rendered
+    assert "flush_line = yes" in rendered
+
+
+def test_strongswan_conf_has_no_dotted_section_keys() -> None:
+    """A section key must be a single NAME: charon rejects a dot outright.
+
+    ``strongswan.conf(5)`` writes settings as ``charon.plugins.vici.socket``,
+    which reads like the file syntax but is only documentation notation.  A
+    literal dotted key makes charon abort with *syntax error, unexpected .*
+    before it opens the VICI socket, so the testbed silently ends up with no
+    daemon at all.  Guards the key part of every assignment and section.
+    """
+    rendered = render_strongswan_conf(
+        vici_socket="/run/fera-testbed/charon-a.vici",
+        log_file="/tmp/charon-a.log",
+    )
+    offenders = [
+        line
+        for line in rendered.splitlines()
+        if not line.lstrip().startswith("#")
+        and (key := line.split("=", 1)[0].split("{", 1)[0]).strip()
+        and "." in key
+    ]
+    assert offenders == [], f"charon cannot parse {offenders}"
+
+
+_CHARON = "/usr/lib/ipsec/charon"
+
+
+@pytest.mark.skipif(not Path(_CHARON).is_file(), reason="strongSwan charon is not installed")
+def test_strongswan_conf_is_accepted_by_charon(tmp_path: Path) -> None:
+    """Let charon itself check the file: only it knows the settings grammar."""
+    rendered = render_strongswan_conf(
+        vici_socket=str(tmp_path / "charon-a.vici"),
+        log_file=str(tmp_path / "charon-a.log"),
+    )
+    conf = tmp_path / "strongswan.conf"
+    conf.write_text(rendered, encoding="utf-8")
+    result = subprocess.run(
+        [_CHARON, "--version"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        env={**os.environ, "STRONGSWAN_CONF": str(conf)},
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    assert "syntax error" not in output, output
+    assert "invalid config" not in output, output
+    assert "abort initialization" not in output, output
 
 
 def test_control_traffic_experiment_generates_configuration(topology) -> None:

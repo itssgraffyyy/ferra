@@ -338,25 +338,53 @@ def render_strongswan_conf(
 
     Used by the network namespace testbed, where each endpoint runs its own
     charon with a private VICI socket (``swanctl --uri`` then talks to exactly
-    one endpoint instance).  Key names follow ``strongswan.conf(5)``:
-    the VICI socket is ``charon.plugins.vici.socket``.
+    one endpoint instance).
+
+    ``strongswan.conf(5)`` documents settings in the dotted spelling (the VICI
+    socket is ``charon.plugins.vici.socket``), but that is documentation
+    notation: the settings parser reads a section key as a NAME and stops at a
+    dot, so a dotted key is a syntax error (*unexpected ., expecting : or '{'
+    or '='*) and charon aborts during startup instead of running.  The file is
+    therefore written in the nested form, matching ``/etc/strongswan.conf``.
+
+    The same rule applies to the filelog ``<name>``, which is a section key
+    too, so a log path like ``.../charon-a.log`` cannot be the section name:
+    it is passed as ``path`` instead, which ``strongswan.conf(5)`` says must be
+    used "if the path contains characters that aren't allowed in section
+    names".
     """
     socket_uri = vici_socket if vici_socket.startswith("unix://") else f"unix://{vici_socket}"
     lines = [
         "# FERA - generated strongswan.conf for a dedicated charon instance.",
         "# vici socket of this instance:",
-        f"charon.plugins.vici.socket = {socket_uri}",
-        f"charon.threads = {int(threads)}",
+        "charon {",
+        "  plugins {",
+        "    vici {",
+        f"      socket = {socket_uri}",
+        "    }",
+        "    # The resolve plugin runs /sbin/resolvconf synchronously while the",
+        "    # daemon starts.  On hosts where that is a symlink to resolvectl it",
+        "    # waits for systemd-resolved and never returns, which leaves charon",
+        "    # accepting VICI connections but never answering them: swanctl hangs",
+        "    # on every command and the testbed looks like a slow daemon.",
+        "    # A testbed endpoint needs no DNS servers installed.",
+        "    resolve {",
+        "      load = no",
+        "    }",
+        "  }",
+        f"  threads = {int(threads)}",
     ]
     if log_file:
         lines += [
-            "charon.filelog {",
-            f"\t{log_file} {{",
-            "\t\tdefault = 1",
-            "\t\tflush_line = yes",
-            "\t}",
-            "}",
+            "  filelog {",
+            "    fera {",
+            f"      path = {log_file}",
+            "      default = 1",
+            "      flush_line = yes",
+            "    }",
+            "  }",
         ]
+    lines.append("}")
     return "\n".join(lines) + "\n"
 
 
