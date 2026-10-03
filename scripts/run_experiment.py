@@ -22,6 +22,7 @@ from fera.common.errors import ErrorCode, FeraError  # noqa: E402
 from fera.common.paths import default_paths  # noqa: E402
 from fera.dataset.runner import ExperimentRunner, RunnerSettings, RunStatus  # noqa: E402
 from fera.dataset.schema import find_experiment_configs, load_experiment  # noqa: E402
+from fera.experiment.netem import CONDITION_NAMES  # noqa: E402
 from fera.testbed.topology import load_topology  # noqa: E402
 
 
@@ -44,6 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--capture-tool", default=None, choices=(None, "tcpdump", "dumpcap"))
     parser.add_argument("--capture-snaplen", type=int, default=0)
     parser.add_argument("--sa-wait-timeout", type=float, default=30.0)
+    parser.add_argument("--network-condition", default="baseline", choices=CONDITION_NAMES,
+                        help="netem condition applied to the capture interface during the run")
+    parser.add_argument("--network-interface", default=None,
+                        help="interface for the netem qdisc (default: the capture interface)")
     parser.add_argument("--limit", type=int, default=None, help="run at most N experiments of a directory")
     parser.add_argument("--continue-on-error", action="store_true",
                         help="keep going when one experiment fails (batch mode)")
@@ -93,6 +98,8 @@ def main(argv: list[str] | None = None) -> int:
         capture_tool=args.capture_tool,
         capture_snaplen=args.capture_snaplen,
         sa_wait_timeout_s=args.sa_wait_timeout,
+        network_condition=args.network_condition,
+        network_interface=args.network_interface,
         topology_path=args.topology,
         raw_dir=Path(args.raw_dir) if args.raw_dir else None,
         log_level=args.log_level,

@@ -25,7 +25,7 @@ import os
 import platform
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -41,6 +41,7 @@ from ..common.process import BaseRunner, SubprocessRunner
 from ..common.serialization import write_json, write_yaml
 from ..common.versions import collect_tool_versions, platform_summary
 from ..experiment.gates import GateEvidence, derive_gate_state, probe_xfrm
+from ..experiment.netem import NetworkCondition, plan_condition
 from ..testbed.environment import EnvironmentReport, check_environment
 from ..testbed.ipsec_control import IpsecController, SaState
 from ..testbed.namespaces import default_socket_dir, vici_socket_path
@@ -104,6 +105,11 @@ class RunnerSettings:
     python_executable: str = "python3"
     log_level: str = "INFO"
     verify_environment: bool = True
+    #: netem condition applied during the run (``"baseline"`` = none).
+    network_condition: str = "baseline"
+    #: Interface the qdisc is applied to.  ``None`` means the capture interface,
+    #: which is what an impairment experiment actually wants to shape.
+    network_interface: str | None = None
 
 
 @dataclass(frozen=True)
@@ -325,10 +331,16 @@ class ExperimentRunner:
 
         self._apply_configuration(generated, secrets_file)
         self._start_capture()
-        sa_a, sa_b = self._establish_ipsec(generated)
-        traffic_result = self._run_traffic(generated)
-        capture_result = self._stop_capture()
-        validation = self._validate_capture()
+        applied = self._apply_network_condition(self._netem_condition())
+        try:
+            sa_a, sa_b = self._establish_ipsec(generated)
+            traffic_result = self._run_traffic(generated)
+            capture_result = self._stop_capture()
+            validation = self._validate_capture()
+        finally:
+            # Runs on every exit path, including a failed experiment: a qdisc
+            # left behind silently changes the next run's behaviour.
+            self._cleanup_network_condition(applied)
         self._teardown(generated)
 
         valid_capture = bool(validation.valid and traffic_result.generated)
@@ -356,6 +368,7 @@ class ExperimentRunner:
             traffic_result=traffic_result,
             valid_capture=valid_capture,
         )
+        write_json(self.experiment_dir / "network_condition.json", applied.to_dict())
         document = self._build_ground_truth(
             execution_status=(RunStatus.SUCCESS.value if valid_capture else RunStatus.FAILED.value),
             valid_capture=valid_capture,
@@ -368,6 +381,7 @@ class ExperimentRunner:
             sa_states={"a": sa_a, "b": sa_b},
             traffic_result=traffic_result,
             generated=generated,
+            network_condition=applied.to_dict(),
         )
         ground_truth_file = document.write(self.ground_truth_path)
         logger.info("ground truth written: %s", ground_truth_file)
@@ -555,6 +569,75 @@ class ExperimentRunner:
             self._stop_responder()
         return result
 
+    def _netem_condition(self) -> NetworkCondition:
+        """The condition to apply, with its interface resolved."""
+        interface = self.settings.network_interface or self.capture_interface()
+        return plan_condition(self.settings.network_condition, interface=interface)
+
+    def _apply_network_condition(self, condition: NetworkCondition) -> NetworkCondition:
+        """Apply the planned qdisc and record honestly whether it took effect.
+
+        ``fera.experiment.netem`` plans but never executes -- its docstring is
+        explicit about that -- so execution lives here.  ``applied`` is set only
+        when ``tc`` actually succeeded: a condition that was requested but not
+        applied must never be recorded as applied, or a manifest would claim an
+        impairment that did not happen.
+
+        A condition that cannot be applied here (no interface, the baseline
+        condition, or no ``tc``) is not an error.  The run proceeds unimpaired
+        and says so, which is the honest outcome for a host that cannot shape
+        its traffic.
+        """
+        command = condition.apply_command()
+        if command is None:
+            logger.info("network condition '%s' needs no qdisc", condition.name)
+            return condition
+        if not condition.executable_here():
+            logger.warning(
+                "cannot apply network condition '%s' on this host (interface=%r); "
+                "the run proceeds unimpaired",
+                condition.name,
+                condition.interface,
+            )
+            return condition
+        result = self.command_runner.run(command, timeout=30.0, check=False)
+        if not result.ok:
+            logger.warning(
+                "network condition '%s' was not applied (tc rc=%s: %s); the run "
+                "proceeds unimpaired rather than recording an impairment that "
+                "did not happen",
+                condition.name,
+                result.returncode,
+                (result.stderr or "").strip(),
+            )
+            return condition
+        logger.info("network condition '%s' applied: %s", condition.name, " ".join(command))
+        return replace(condition, applied=True)
+
+    def _cleanup_network_condition(self, condition: NetworkCondition) -> None:
+        """Remove the qdisc.  Best effort, and never the reason a run fails.
+
+        A qdisc left behind changes the next run's behaviour, which is how "the
+        second experiment behaved differently from the first" happens.
+        """
+        command = condition.cleanup_command()
+        if command is None or not condition.applied:
+            return
+        try:
+            result = self.command_runner.run(command, timeout=30.0, check=False)
+        except Exception as exc:  # noqa: BLE001 - cleanup must not mask the result
+            logger.warning("could not clean up the netem qdisc: %s", exc)
+            return
+        if result.ok:
+            logger.info("netem qdisc removed from %s", condition.interface)
+        else:
+            logger.warning(
+                "could not remove the netem qdisc from %s (tc rc=%s); the next run "
+                "on this interface may inherit it",
+                condition.interface,
+                result.returncode,
+            )
+
     def _stop_capture(self) -> CaptureResult:
         if self._capture is None:
             raise FeraError("internal error: capture was never started", code=ErrorCode.INTERNAL_ERROR)
@@ -621,6 +704,7 @@ class ExperimentRunner:
         sa_states: Mapping[str, SaState] | None = None,
         traffic_result: TrafficResult | None = None,
         generated: Any = None,
+        network_condition: Mapping[str, Any] | None = None,
         notes: str | None = None,
     ) -> Any:
         capture_details: dict[str, Any] = dict(capture_result.to_dict()) if capture_result else {}
@@ -629,6 +713,11 @@ class ExperimentRunner:
             capture_details["sha256"] = sha256
         if traffic_result is not None:
             capture_details["traffic"] = traffic_result.to_dict()
+        if network_condition is not None:
+            # Records what was *requested* and, separately, whether it was
+            # actually applied, so no artefact can claim an impairment that did
+            # not happen.
+            capture_details["network_condition"] = dict(network_condition)
         sa_details: dict[str, Any] = {}
         if sa_states:
             sa_details = {f"endpoint_{key}": state.to_dict() for key, state in sa_states.items()}
