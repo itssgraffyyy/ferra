@@ -74,7 +74,7 @@ Verification steps for the environment:
 ip netns exec fera-a ping -c 1 10.10.10.2      # outer reachability
 ip netns exec fera-a ping -c 1 10.30.0.1       # protected reachability
 /usr/lib/ipsec/charon --version                # charon present
-swanctl --uri unix:///run/fera-testbed/charon-a.vici --stats
+swanctl --stats --uri unix:///run/fera-testbed/charon-a.vici
 ip xfrm state                                   # needs CONFIG_XFRM_USER + root
 ```
 

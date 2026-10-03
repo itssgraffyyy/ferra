@@ -152,11 +152,16 @@ class IpsecController:
         The VICI socket is selected with ``--uri`` when configured, and the
         command is prefixed for the endpoint (``ip netns exec ...`` or
         ``ssh ...``) when the endpoint is not local.
+
+        ``--uri`` is appended *after* the subcommand on purpose.  swanctl parses
+        its general options only once it has seen the subcommand, so
+        ``swanctl --uri <uri> --stats`` dies with ``unrecognized option '--uri'``
+        while ``swanctl --stats --uri <uri>`` connects: a leading ``--uri`` makes
+        every control call fail and the daemon look unreachable.
         """
-        parts = [self.swanctl]
+        parts = [self.swanctl, *(str(argument) for argument in arguments)]
         if self.uri:
             parts += ["--uri", self.uri]
-        parts += [str(argument) for argument in arguments]
         return [*self.command_prefix, *parts]
 
     @property
