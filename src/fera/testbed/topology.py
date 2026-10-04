@@ -27,6 +27,16 @@ INITIATOR = "initiator"
 RESPONDER = "responder"
 SUPPORTED_ROLES = (INITIATOR, RESPONDER)
 
+#: How a command reaches an endpoint.  This is deliberately an explicit, typed
+#: field rather than something inferred from the shape of ``command_prefix``:
+#: whether an endpoint owns a private VICI socket (namespace) or is a separate
+#: machine that must use its own local daemon (ssh) is a fact about the testbed
+#: that a reader must be able to see, not a detail to guess at.
+LOCAL = "local"
+NETNS = "netns"
+SSH = "ssh"
+SUPPORTED_KINDS = (LOCAL, NETNS, SSH)
+
 
 def split_cidr(value: str) -> tuple[str, int]:
     """Split ``10.0.0.1/24`` into ``("10.0.0.1", 24)``; bare addresses get a host prefix."""
@@ -85,6 +95,12 @@ class Endpoint:
     netns: str | None = None
     command_prefix: tuple[str, ...] = ()
     sudo: bool = False
+    kind: str = LOCAL
+    ssh_host: str | None = None
+    ssh_user: str | None = None
+    ssh_port: int | None = None
+    ssh_identity: str | None = None
+    capture_interface: str | None = None
 
     def __post_init__(self) -> None:
         if self.role not in SUPPORTED_ROLES:
@@ -92,10 +108,62 @@ class Endpoint:
                 f"endpoint {self.name!r} has invalid role {self.role!r}",
                 hint=f"supported roles: {', '.join(SUPPORTED_ROLES)}",
             )
+        if self.kind not in SUPPORTED_KINDS:
+            raise ConfigValidationError(
+                f"endpoint {self.name!r} has invalid kind {self.kind!r}",
+                hint=f"supported kinds: {', '.join(SUPPORTED_KINDS)}",
+            )
+        if self.kind == SSH and not self.ssh_host:
+            raise ConfigValidationError(
+                f"endpoint {self.name!r} is kind 'ssh' but has no ssh_host",
+                hint="set ssh_host (and usually ssh_user / ssh_port)",
+            )
+        if self.kind != SSH and self.ssh_host:
+            raise ConfigValidationError(
+                f"endpoint {self.name!r} sets ssh_host but its kind is {self.kind!r}",
+                hint=f"set kind: {SSH} to use ssh_host",
+            )
         if not (self.outer_ipv4 or self.outer_ipv6):
             raise ConfigValidationError(f"endpoint {self.name!r} needs at least one outer address")
         if not self.ike_id:
             object.__setattr__(self, "ike_id", f"{self.name}.fera.test")
+
+    # -- reachability ---------------------------------------------------
+    @property
+    def is_remote(self) -> bool:
+        """True when this endpoint is a separate machine reached over SSH."""
+        return self.kind == SSH
+
+    @property
+    def uses_private_vici(self) -> bool:
+        """True when this endpoint runs its own charon on a FERA-private socket.
+
+        Namespace endpoints do: each instance is started by FERA with a private
+        socket, and ``/var/run`` is shadowed for them.  A remote VM does not:
+        its daemon is the ordinary system instance, and FERA must address it with
+        the VM's default VICI socket rather than a path built on the controller.
+        """
+        return self.kind == NETNS or (self.kind == LOCAL and bool(self.netns))
+
+    @property
+    def ssh_target(self) -> str:
+        """``user@host`` as OpenSSH expects it."""
+        return f"{self.ssh_user}@{self.ssh_host}" if self.ssh_user else str(self.ssh_host)
+
+    def ssh_command_prefix(self) -> tuple[str, ...]:
+        """Argument array that runs a command on this endpoint over SSH.
+
+        Arguments stay separated: this is an argv list, never a shell string.
+        OpenSSH re-joins the remote arguments for the remote shell, so callers
+        must pass arguments that survive that - which is why FERA avoids embedding
+        quotes and redirections in endpoint commands.
+        """
+        prefix = ["ssh", "-o", "BatchMode=yes"]
+        if self.ssh_port:
+            prefix += ["-p", str(self.ssh_port)]
+        if self.ssh_identity:
+            prefix += ["-i", str(self.ssh_identity)]
+        return (*prefix, self.ssh_target)
 
     # -- addressing ----------------------------------------------------
     def outer_address(self, ip_version: int) -> str | None:
@@ -153,6 +221,10 @@ class Endpoint:
         per-endpoint runtime directory must be created explicitly by the caller.
         """
         prefix = list(self.command_prefix)
+        if not prefix and self.kind == SSH:
+            # A separate machine: every command, including capture and traffic,
+            # has to be issued on the far side of the SSH connection.
+            return [*self.ssh_command_prefix(), *command]
         if not prefix and self.netns:
             # Imported here, not at module scope: namespaces imports this module.
             from .namespaces import netns_prefix  # noqa: PLC0415 - avoids a cycle
@@ -172,6 +244,12 @@ class Endpoint:
             "netns": self.netns,
             "command_prefix": list(self.command_prefix),
             "sudo": self.sudo,
+            "kind": self.kind,
+            "ssh_host": self.ssh_host,
+            "ssh_user": self.ssh_user,
+            "ssh_port": self.ssh_port,
+            "ssh_identity": self.ssh_identity,
+            "capture_interface": self.capture_interface,
         }
 
     def describe(self) -> str:
@@ -338,9 +416,18 @@ class TestbedTopology:
         mode) the protected traffic, so it is the right vantage point.
         """
         target = self.endpoint(endpoint)
-        if target.netns is None and not target.command_prefix:
+        # A remote VM names its own interface (enp0s8); the veth names below are
+        # an artefact of the namespace testbed and mean nothing there.
+        if target.capture_interface:
+            return target.capture_interface
+        if target.kind == LOCAL and not target.netns and not target.command_prefix:
             return None
         return self.veth_a if target.role == INITIATOR else self.veth_b
+
+    @property
+    def is_remote(self) -> bool:
+        """True when either endpoint lives on another machine."""
+        return self.endpoint_a.is_remote or self.endpoint_b.is_remote
 
     # -- metadata --------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
@@ -390,6 +477,12 @@ _ENDPOINT_KEYS = {
     "netns",
     "command_prefix",
     "sudo",
+    "kind",
+    "ssh_host",
+    "ssh_user",
+    "ssh_port",
+    "ssh_identity",
+    "capture_interface",
 }
 
 
@@ -428,6 +521,12 @@ def endpoint_from_dict(data: Mapping[str, Any]) -> Endpoint:
         netns=data.get("netns"),
         command_prefix=tuple(str(part) for part in prefix),
         sudo=bool(data.get("sudo", False)),
+        kind=str(data.get("kind") or LOCAL),
+        ssh_host=data.get("ssh_host"),
+        ssh_user=data.get("ssh_user"),
+        ssh_port=int(data["ssh_port"]) if data.get("ssh_port") else None,
+        ssh_identity=data.get("ssh_identity"),
+        capture_interface=data.get("capture_interface"),
     )
 
 

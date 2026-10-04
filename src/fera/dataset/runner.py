@@ -45,6 +45,7 @@ from ..experiment.netem import NetworkCondition, plan_condition
 from ..testbed.environment import EnvironmentReport, check_environment
 from ..testbed.ipsec_control import IpsecController, SaState
 from ..testbed.namespaces import default_socket_dir, vici_socket_path
+from ..testbed.remote_preflight import require_remote_endpoints_ready
 from ..testbed.swanctl_config import generate_config, generate_psk
 from ..testbed.topology import TestbedTopology, load_topology
 from ..traffic.base import TrafficResult
@@ -114,6 +115,10 @@ class RunnerSettings:
     #: configuration but must land in the same split, so the split key is the
     #: session, not the experiment id.
     session_id: str | None = None
+    #: Seconds allowed for each remote preflight command.  SSH over a forwarded
+    #: VirtualBox port is not instant, and the first probe of a cold VM can be
+    #: slow; the default is generous but bounded.
+    preflight_timeout_s: float = 45.0
 
 
 @dataclass(frozen=True)
@@ -211,7 +216,12 @@ class ExperimentRunner:
         return self._controllers[key]
 
     def _vici_sockets(self) -> dict[str, str]:
-        """VICI URIs of the per-endpoint daemons, keyed by endpoint."""
+        """VICI URIs of the per-endpoint daemons, keyed by endpoint.
+
+        Remote endpoints are absent by design: they use their own host's default
+        socket, so there is no FERA-private URI to probe and nothing here should
+        invent one.
+        """
         sockets: dict[str, str] = {}
         for key in ("a", "b"):
             uri = self._vici_uri(key)
@@ -220,16 +230,21 @@ class ExperimentRunner:
         return sockets
 
     def _vici_uri(self, key: str) -> str | None:
-        """VICI URI of an endpoint.
+        """VICI URI to address an endpoint's charon with.
 
-        Per endpoint charon instances (network namespace testbed) use a private
-        socket; the default (``None``) leaves swanctl talking to the standard
-        instance of the local host.
+        A namespace endpoint runs a charon that FERA started with a private
+        socket, so it is addressed by that path.  A remote VM runs the ordinary
+        system daemon on *its own* host: the private path does not exist there,
+        and it is a path on the controller rather than on the machine being
+        addressed, so no URI is generated.  ``swanctl`` then falls back to the
+        endpoint's default local socket, which must be working on the VM.
         """
         if self.settings.dry_run:
             return None
         endpoint = self.topology.endpoint(key)
-        if endpoint.netns or endpoint.command_prefix:
+        if endpoint.is_remote:
+            return None
+        if endpoint.uses_private_vici or endpoint.netns or endpoint.command_prefix:
             return f"unix://{vici_socket_path(default_socket_dir(), key)}"
         return None
 
@@ -323,24 +338,39 @@ class ExperimentRunner:
 
         environment: EnvironmentReport | None = None
         if self.settings.verify_environment and not self.settings.dry_run:
-            environment = check_environment(
-                self.paths,
-                self.command_runner,
-                expected_ip_version=self.config.ip_version,
-                capture_interface=self.capture_interface(),
-                # The capture runs on the endpoint ("a"), so the interface must be
-                # looked up in that endpoint's namespace.  On the host a testbed
-                # interface such as fera-va does not exist, and checking it there
-                # would abort every real run with a false "does not exist".
-                interface_command_prefix=self.endpoint_prefix("a"),
-                # A bound socket is not a working one: charon can listen, accept
-                # and then never answer.  Probe each endpoint before spending a
-                # 20s capture on an experiment that cannot reach its control plane.
-                vici_sockets=self._vici_sockets(),
-            )
-            write_json(self.experiment_dir / "environment.json", environment.to_dict())
-            if not environment.ready:
-                return self._record_environment_blocker(environment, generated)
+            if self.topology.is_remote:
+                # The local environment report asks about *this* machine, which
+                # on a WSL controller is not where strongSwan lives.  For a remote
+                # testbed the meaningful checks are the endpoint preflights, so
+                # run those instead and record them as the environment evidence.
+                preflight = require_remote_endpoints_ready(
+                    self.topology, self.command_runner, timeout=self.settings.preflight_timeout_s
+                )
+                write_json(
+                    self.experiment_dir / "remote_preflight.json",
+                    {"endpoints": [r.to_dict() for r in preflight]},
+                )
+                for result in preflight:
+                    logger.info("remote preflight %s", result.render_text())
+            else:
+                environment = check_environment(
+                    self.paths,
+                    self.command_runner,
+                    expected_ip_version=self.config.ip_version,
+                    capture_interface=self.capture_interface(),
+                    # The capture runs on the endpoint ("a"), so the interface must be
+                    # looked up in that endpoint's namespace.  On the host a testbed
+                    # interface such as fera-va does not exist, and checking it there
+                    # would abort every real run with a false "does not exist".
+                    interface_command_prefix=self.endpoint_prefix("a"),
+                    # A bound socket is not a working one: charon can listen, accept
+                    # and then never answer.  Probe each endpoint before spending a
+                    # 20s capture on an experiment that cannot reach its control plane.
+                    vici_sockets=self._vici_sockets(),
+                )
+                write_json(self.experiment_dir / "environment.json", environment.to_dict())
+                if not environment.ready:
+                    return self._record_environment_blocker(environment, generated)
 
         capture_settings = {
             "interface": self.capture_interface(),

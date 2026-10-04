@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import REPO_ROOT
 from fera.common.errors import ConfigValidationError
 from fera.testbed.namespaces import (
     DEFAULT_SOCKET_DIR,
@@ -19,8 +20,11 @@ from fera.testbed.namespaces import (
 )
 from fera.testbed.topology import (
     DEFAULT_TOPOLOGY_DOCUMENT,
+    SSH,
     Endpoint,
+    TestbedTopology,
     default_topology,
+    endpoint_from_dict,
     host_cidr,
     is_host_selector,
     load_topology,
@@ -231,6 +235,36 @@ def test_socket_dir_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     assert default_socket_dir() == Path("/tmp/custom-sockets")
 
 
+# --- SSH / two-VM endpoints -------------------------------------------------
+# The other half of the testbed story: endpoints that are separate machines
+# reached over SSH, where almost every namespace assumption is false.
+
+
+def _ssh_topology_document() -> dict:
+    return {
+        "schema_version": 1,
+        "name": "ssh_two_vm",
+        "runner": "ssh",
+        "link": {"ipv4": "10.10.10.0/24"},
+        "endpoints": {
+            "a": {
+                "name": "endpoint-a", "role": "initiator", "kind": "ssh",
+                "ssh_host": "10.0.2.15", "ssh_user": "fera", "ssh_port": 2221,
+                "capture_interface": "enp0s8", "outer_ipv4": "10.10.10.1/24",
+            },
+            "b": {
+                "name": "endpoint-b", "role": "responder", "kind": "ssh",
+                "ssh_host": "10.0.2.15", "ssh_user": "fera", "ssh_port": 2222,
+                "capture_interface": "enp0s8", "outer_ipv4": "10.10.10.2/24",
+            },
+        },
+    }
+
+
+def _ssh_topology() -> TestbedTopology:
+    return topology_from_dict(_ssh_topology_document())
+
+
 
 def test_charon_command_is_wrapped_for_its_endpoint() -> None:
     command = charon_command(default_topology(), "b", strongswan_conf="/tmp/b.conf")
@@ -276,3 +310,116 @@ def test_explicit_command_prefix_beats_the_launcher(monkeypatch: pytest.MonkeyPa
     custom = dataclasses.replace(endpoint, command_prefix=("docker", "exec", "ep-a"))
     assert custom.wrap_command(["ping", "-c1"]) == ["docker", "exec", "ep-a", "ping", "-c1"]
 
+def test_ssh_endpoint_is_explicitly_remote_and_not_namespace() -> None:
+    topology = _ssh_topology()
+    assert topology.is_remote is True
+    for key in ("a", "b"):
+        endpoint = topology.endpoint(key)
+        assert endpoint.is_remote is True
+        assert endpoint.uses_private_vici is False, "a VM uses its own default VICI socket"
+        assert endpoint.netns is None
+
+
+def test_netns_endpoints_are_still_not_remote() -> None:
+    topology = default_topology()
+    assert topology.is_remote is False
+    for key in ("a", "b"):
+        endpoint = topology.endpoint(key)
+        assert endpoint.is_remote is False
+        assert endpoint.uses_private_vici is True, "namespace endpoints keep a private socket"
+
+
+def test_ssh_wraps_commands_as_a_separated_argument_array() -> None:
+    command = _ssh_topology().endpoint("a").wrap_command(["swanctl", "--list-sas"])
+    assert command[:6] == ["ssh", "-o", "BatchMode=yes", "-p", "2221", "fera@10.0.2.15"]
+    assert command[6:] == ["swanctl", "--list-sas"]
+    # Every element is its own argument: no shell string is ever built.
+    assert all(" " not in part for part in command)
+
+
+def test_ssh_targets_differ_per_endpoint() -> None:
+    topology = _ssh_topology()
+    prefix_a = topology.endpoint("a").wrap_command(["ip"])[:-1]
+    prefix_b = topology.endpoint("b").wrap_command(["ip"])[:-1]
+    assert prefix_a != prefix_b
+    assert "2221" in prefix_a and "2222" in prefix_b
+
+
+def test_ssh_prefix_is_noninteractive() -> None:
+    """BatchMode stops a preflight hanging on a password or host-key prompt."""
+    assert tuple(_ssh_topology().endpoint("a").ssh_command_prefix()[:3]) == (
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+    )
+
+
+def test_ssh_identity_is_a_separate_argument() -> None:
+    endpoint = dataclasses.replace(
+        _ssh_topology().endpoint("a"), ssh_identity="/home/me/.ssh/id_fera"
+    )
+    prefix = endpoint.ssh_command_prefix()
+    assert prefix[prefix.index("-i") + 1] == "/home/me/.ssh/id_fera"
+
+
+def test_explicit_command_prefix_wins_over_ssh() -> None:
+    endpoint = dataclasses.replace(
+        _ssh_topology().endpoint("a"), command_prefix=("docker", "exec", "ep-a")
+    )
+    assert endpoint.wrap_command(["ip", "addr"]) == ["docker", "exec", "ep-a", "ip", "addr"]
+
+
+def test_ssh_capture_interface_comes_from_the_endpoint_not_a_veth() -> None:
+    topology = _ssh_topology()
+    assert topology.capture_interface("a") == "enp0s8"
+    assert topology.capture_interface("b") == "enp0s8"
+
+
+def test_ssh_kind_requires_a_host() -> None:
+    with pytest.raises(ConfigValidationError, match="ssh_host"):
+        endpoint_from_dict(
+            {"name": "x", "role": "initiator", "kind": "ssh", "outer_ipv4": "10.0.0.1/24"}
+        )
+
+
+def test_ssh_host_without_ssh_kind_is_rejected() -> None:
+    """A remote address on a local endpoint would silently do the wrong thing."""
+    with pytest.raises(ConfigValidationError, match="ssh_host"):
+        endpoint_from_dict(
+            {
+                "name": "x", "role": "initiator", "kind": "local",
+                "ssh_host": "10.0.2.15", "outer_ipv4": "10.0.0.1/24",
+            }
+        )
+
+
+def test_unknown_kind_is_rejected() -> None:
+    with pytest.raises(ConfigValidationError, match="kind"):
+        endpoint_from_dict(
+            {"name": "x", "role": "initiator", "kind": "telepathy", "outer_ipv4": "10.0.0.1/24"}
+        )
+
+
+def test_ssh_fields_round_trip_through_to_dict() -> None:
+    original = _ssh_topology().endpoint("a")
+    restored = endpoint_from_dict(original.to_dict())
+    assert restored.kind == SSH
+    assert restored.ssh_host == original.ssh_host
+    assert restored.ssh_port == original.ssh_port
+    assert restored.capture_interface == original.capture_interface
+
+
+def test_shipped_ssh_template_parses_and_is_remote() -> None:
+    topology = load_topology(str(REPO_ROOT / "configs" / "templates" / "testbed_topology_ssh.yaml"))
+    assert topology.is_remote is True
+    assert topology.capture_interface("a") == "enp0s8"
+    assert topology.endpoint_a.outer_ipv4 == "10.10.10.1/24"
+    assert topology.endpoint_b.outer_ipv4 == "10.10.10.2/24"
+
+
+def test_shipped_netns_template_is_unchanged_by_the_ssh_work() -> None:
+    """The namespace topology must remain the shipped default."""
+    topology = load_topology(str(REPO_ROOT / "configs" / "templates" / "testbed_topology.yaml"))
+    assert topology.is_remote is False
+    assert topology.endpoint_a.netns == "fera-a"
+    assert topology.capture_interface("a") == topology.veth_a

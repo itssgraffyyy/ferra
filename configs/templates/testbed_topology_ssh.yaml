@@ -1,0 +1,67 @@
+# FERA testbed topology: two real Ubuntu VMs reached over SSH.
+#
+# Separate file from testbed_topology.yaml on purpose - the namespace testbed is
+# the shipped default and must not be replaced by this one.
+#
+#   VM-A : enp0s8 10.10.10.1/24, initiator
+#   VM-B : enp0s8 10.10.10.2/24, responder
+#
+# Each VM runs the ordinary system strongSwan (charon-systemd) with its own
+# already-working IKEv2 + CHILD_SA, and `swanctl` reaches it on that VM's
+# DEFAULT local VICI socket.  FERA therefore addresses the daemons with no
+# `--uri` at all and must not invent a private socket path: that path would be a
+# path on the WSL controller, not on the VM being addressed.
+#
+# Fill in ssh_host (and ssh_user / ssh_port) for your machines.  Do NOT assume
+# the VirtualBox forwarded ports are reachable from WSL at 127.0.0.1 - verify
+# first, then set the address that actually works from the machine running FERA:
+#
+#     ssh -o BatchMode=yes -p 2221 <user>@127.0.0.1 true
+#
+# kind: ssh is explicit and required.  It is what tells FERA that the endpoint is
+# another machine (so: no private VICI socket, capture and traffic run remotely)
+# as opposed to a namespace or a local prefix.
+schema_version: 1
+name: ssh_two_vm
+description: Two Ubuntu VMs on a VirtualBox host-only network, driven over SSH
+  from the machine running FERA.  Each VM runs the ordinary system strongSwan.
+runner: ssh
+link:
+  ipv4: 10.10.10.0/24
+  mtu: 1400
+interfaces:
+  veth_a: enp0s8
+  veth_b: enp0s8
+ike:
+  port: 500
+  nat_t_port: 4500
+endpoints:
+  a:
+    name: endpoint-a
+    role: initiator
+    kind: ssh
+    # --- REQUIRED: replace with the address reachable FROM the FERA machine ---
+    ssh_host: 127.0.0.1
+    ssh_user: fera
+    ssh_port: 2221
+    # ssh_identity: /home/you/.ssh/id_fera   # optional
+    capture_interface: enp0s8
+    outer_ipv4: 10.10.10.1/24
+    # Tunnel-mode experiments protect a subnet *behind* each endpoint.  Your VMs
+    # expose only enp0s8, so add an address here that genuinely exists (a dummy
+    # interface or loopback alias on 10.20.0.1 / 10.30.0.1).  Leave these out if
+    # you only intend transport/host-to-host experiments - FERA will then refuse
+    # tunnel mode with a clear message instead of pretending it ran.
+    # protected_ipv4: 10.20.0.1/24
+  b:
+    name: endpoint-b
+    role: responder
+    kind: ssh
+    # --- REQUIRED: replace with the address reachable FROM the FERA machine ---
+    ssh_host: 127.0.0.1
+    ssh_user: fera
+    ssh_port: 2222
+    # ssh_identity: /home/you/.ssh/id_fera   # optional
+    capture_interface: enp0s8
+    outer_ipv4: 10.10.10.2/24
+    # protected_ipv4: 10.30.0.1/24

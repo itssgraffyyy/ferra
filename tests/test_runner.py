@@ -437,3 +437,121 @@ def test_endpoint_is_wrapped_for_the_namespace_testbed(sandbox_paths, topology, 
     assert load[4] == "swanctl"
     assert "unix://" in " ".join(load)  # per endpoint vici socket
 
+
+
+# --- remote (two-VM / SSH) endpoints ----------------------------------------
+# Capture, traffic, responder and the control plane already route through
+# endpoint_prefix(); these pin that routing for a remote endpoint and cover the
+# one behaviour that had to change: no private VICI URI.
+
+
+def _ssh_topology(protected: bool = True):
+    from fera.testbed.topology import topology_from_dict
+
+    a = {
+        "name": "endpoint-a", "role": "initiator", "kind": "ssh",
+        "ssh_host": "10.0.2.15", "ssh_user": "fera", "ssh_port": 2221,
+        "capture_interface": "enp0s8", "outer_ipv4": "10.10.10.1/24",
+    }
+    b = {
+        "name": "endpoint-b", "role": "responder", "kind": "ssh",
+        "ssh_host": "10.0.2.15", "ssh_user": "fera", "ssh_port": 2222,
+        "capture_interface": "enp0s8", "outer_ipv4": "10.10.10.2/24",
+    }
+    if protected:
+        # Tunnel mode needs a subnet behind each endpoint.
+        a["protected_ipv4"] = "10.20.0.1/24"
+        b["protected_ipv4"] = "10.30.0.1/24"
+    return topology_from_dict(
+        {"name": "ssh_two_vm", "runner": "ssh", "endpoints": {"a": a, "b": b}}
+    )
+
+
+def test_remote_topology_without_protected_addresses_refuses_tunnel_mode(sandbox_paths) -> None:
+    """A VM with only enp0s8 cannot run tunnel mode, and FERA must say so.
+
+    Better to refuse than to generate selectors for addresses that do not exist.
+    """
+    from fera.common.errors import ConfigValidationError
+
+    with pytest.raises(ConfigValidationError, match="protected IPv4"):
+        make_runner(
+            make_config(), sandbox_paths, _ssh_topology(protected=False), ScriptedRunner()
+        ).run()
+
+
+def test_remote_endpoints_get_no_private_vici_uri(sandbox_paths) -> None:
+    """The private socket path lives on the controller, not on the VM.
+
+    Passing it would address a file that does not exist on the machine being
+    addressed, so a remote endpoint must fall back to its own default socket.
+    """
+    runner = make_runner(make_config(), sandbox_paths, _ssh_topology(), ScriptedRunner())
+    assert runner._vici_uri("a") is None
+    assert runner._vici_uri("b") is None
+    assert runner._vici_sockets() == {}
+
+
+def test_namespace_endpoints_still_get_their_private_vici_uri(sandbox_paths, topology) -> None:
+    """Regression guard: the netns path must be unchanged."""
+    runner = make_runner(make_config(), sandbox_paths, topology, ScriptedRunner())
+    assert runner._vici_uri("a") is not None
+    assert runner._vici_uri("a").startswith("unix://")
+    assert set(runner._vici_sockets()) == {"a", "b"}
+
+
+def test_remote_controller_runs_swanctl_over_ssh_without_a_uri(sandbox_paths) -> None:
+    controller = make_runner(
+        make_config(), sandbox_paths, _ssh_topology(), ScriptedRunner()
+    ).controller("a")
+    command = controller.command("--list-sas")
+    assert "--uri" not in command
+    assert command[:2] == ["ssh", "-o"]
+    assert command[-1] == "--list-sas"
+
+
+def test_remote_capture_uses_enp0s8_on_the_vm(sandbox_paths) -> None:
+    runner = make_runner(make_config(), sandbox_paths, _ssh_topology(), ScriptedRunner())
+    assert runner.capture_interface() == "enp0s8"
+    assert runner.endpoint_prefix("a")[0] == "ssh"
+
+
+def test_traffic_and_responder_route_to_their_own_vm(sandbox_paths) -> None:
+    """Traffic goes to A and the responder to B - two different machines."""
+    runner = make_runner(make_config(), sandbox_paths, _ssh_topology(), ScriptedRunner())
+    prefix_a = runner.endpoint_prefix("a")
+    prefix_b = runner.endpoint_prefix("b")
+    assert prefix_a != prefix_b
+    assert "2221" in prefix_a and "2222" in prefix_b
+
+
+def test_dry_run_on_a_remote_topology_marks_the_sample_invalid(sandbox_paths) -> None:
+    runner = make_runner(
+        make_config(), sandbox_paths, _ssh_topology(), ScriptedRunner(), dry_run=True
+    )
+    assert runner._vici_uri("a") is None
+    outcome = runner.run()
+    assert outcome.status is RunStatus.DRY_RUN
+    assert outcome.valid_capture is False
+    assert outcome.integration_verified is False
+    experiment_dir = sandbox_paths.experiment_dir(make_config().experiment_id)
+    assert not (experiment_dir / "capture.pcap").exists()
+    plan = (experiment_dir / "dry_run_plan.json").read_text(encoding="utf-8")
+    assert "10.0.2.15" in plan
+
+
+def test_remote_run_without_evidence_is_never_marked_verified(
+    sandbox_paths, allow_capture
+) -> None:
+    """Evidence discipline for the remote path: booleans, never a bare success."""
+    config = make_config()
+    outcome = make_runner(
+        config, sandbox_paths, _ssh_topology(), ScriptedRunner(responses=full_evidence_responses())
+    ).run()
+    document = json.loads(
+        (sandbox_paths.experiment_dir(config.experiment_id) / "ground_truth.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert isinstance(document["execution"]["integration_verified"], bool)
+    assert isinstance(outcome.integration_verified, bool)
