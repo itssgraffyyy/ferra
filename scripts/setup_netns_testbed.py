@@ -52,7 +52,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stop-charon", action="store_true", help="stop the FERA charon instances")
     parser.add_argument("--charon-binary", default="/usr/lib/ipsec/charon")
     parser.add_argument("--socket-dir", default=None,
-                        help="directory for the per endpoint VICI sockets (default: /run/fera-testbed)")
+                        help="directory for the per endpoint VICI sockets "
+                             "(default: /run/fera-testbed, or /var/lib/fera-testbed as root, "
+                             "where the private tmpfs shadows /run)")
     parser.add_argument("--log-dir", default=None,
                         help="directory for charon logs and strongswan.conf files (default: data/logs/netns)")
     parser.add_argument("--log-level", default="INFO")
@@ -99,7 +101,16 @@ def _start_charon(topology, socket_dir: Path, log_dir: Path, binary: str) -> lis
             render_strongswan_conf(vici_socket=str(socket_path), log_file=str(log_file)),
         )
         socket_path.unlink(missing_ok=True)
-        command = charon_command(topology, key, strongswan_conf=conf_file, charon_binary=binary)
+        command = charon_command(
+            topology,
+            key,
+            strongswan_conf=conf_file,
+            charon_binary=binary,
+            # Must be the same directory the conf above points at: charon only
+            # creates it, and a divergence here yields a config whose socket
+            # directory does not exist, i.e. no VICI socket at all.
+            socket_dir=socket_dir,
+        )
         log_handle = log_file.open("ab")
         process = subprocess.Popen(  # noqa: S603 - argument array, no shell
             command,

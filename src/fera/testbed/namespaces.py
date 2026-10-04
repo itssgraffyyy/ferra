@@ -28,15 +28,30 @@ from .topology import TestbedTopology
 #: under WSL, which does not support them reliably.
 DEFAULT_SOCKET_DIR = "/run/fera-testbed"
 
+#: Socket directory used when FERA runs as real root.
+#:
+#: Each charon instance gets a private ``/var/run`` so two daemons cannot
+#: collide on the hard-coded ``/var/run/charon.pid``.  Only root can actually
+#: mount that tmpfs, and on a normal host ``/var/run`` is a symlink to ``/run``,
+#: so the mount shadows ``/run`` *itself* -- but only inside charon's own mount
+#: namespace.  ``ip netns exec ... swanctl`` gets a fresh mount namespace that
+#: still sees the real ``/run``, so a socket under ``/run`` is invisible to the
+#: very client that has to drive the daemon, and every ``--load-conns`` fails
+#: with rc=2 while the daemon looks perfectly healthy.  Nothing under ``/run``
+#: can work here, so the socket lives outside it.
+ROOT_SOCKET_DIR = "/var/lib/fera-testbed"
+
 
 def default_socket_dir() -> Path:
     """Return the default VICI socket directory for this platform."""
     override = os.environ.get("FERA_SOCKET_DIR")
     if override:
         return Path(override)
-    if os.name == "posix":
-        return Path(DEFAULT_SOCKET_DIR)
-    return Path(tempfile.gettempdir()) / "fera-testbed"
+    if os.name != "posix":
+        return Path(tempfile.gettempdir()) / "fera-testbed"
+    if os.geteuid() == 0:
+        return Path(ROOT_SOCKET_DIR)
+    return Path(DEFAULT_SOCKET_DIR)
 
 
 SCRIPT_HEADER = """#!/usr/bin/env bash
@@ -160,7 +175,7 @@ def charon_command(
     strongswan_conf: Path | str,
     charon_binary: str = "/usr/lib/ipsec/charon",
     runtime_dir: str = CHARON_RUNTIME_DIR,
-    socket_dir: Path | str = DEFAULT_SOCKET_DIR,
+    socket_dir: Path | str | None = None,
 ) -> list[str]:
     """Full command that starts a dedicated charon instance for an endpoint.
 
@@ -191,13 +206,14 @@ def charon_command(
     exactly as before, instead of never starting at all.
     """
     endpoint = topology.endpoint(key)
+    socket_path = Path(socket_dir) if socket_dir is not None else default_socket_dir()
     return [
         *endpoint.wrap_command([]),
         "sh",
         "-c",
         (
             f"mount -t tmpfs -o rw tmpfs {shlex.quote(runtime_dir)} 2>/dev/null || true; "
-            f"mkdir -p {shlex.quote(str(socket_dir))}; "
+            f"mkdir -p {shlex.quote(str(socket_path))}; "
             f"exec env STRONGSWAN_CONF={shlex.quote(str(strongswan_conf))} "
             f"{shlex.quote(charon_binary)}"
         ),

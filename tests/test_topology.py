@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 from fera.common.errors import ConfigValidationError
-from fera.testbed.namespaces import charon_command
+from fera.testbed.namespaces import (
+    DEFAULT_SOCKET_DIR,
+    ROOT_SOCKET_DIR,
+    charon_command,
+    default_socket_dir,
+)
 from fera.testbed.topology import (
     DEFAULT_TOPOLOGY_DOCUMENT,
     Endpoint,
@@ -172,20 +178,21 @@ def test_charon_command_starts_the_daemon_even_if_the_mount_is_refused() -> None
 
 
 def test_charon_command_creates_the_vici_socket_dir_inside_the_private_tmpfs() -> None:
-    """A successful tmpfs mount must not leave charon without a VICI socket.
+    """The socket directory must exist where charon will look for it.
 
     On a normal host ``/var/run`` is a symlink to ``/run``, so the tmpfs mount
-    over ``/var/run`` shadows ``/run`` itself.  The VICI socket is configured as
-    ``unix:///run/fera-testbed/charon-<key>.vici``; in the fresh tmpfs that
-    directory does not exist, charon binds **no** VICI socket at all, and every
-    ``swanctl`` call fails while the daemon looks healthy.  This only happens
-    when the mount really succeeds, i.e. when FERA runs as root.
+    over ``/var/run`` shadows ``/run`` itself inside charon's mount namespace.
+    The socket is configured as ``unix://<socket_dir>/charon-<key>.vici``; if
+    that directory does not exist charon binds **no** VICI socket at all, and
+    every ``swanctl`` call fails while the daemon still looks healthy.  This only
+    happens when the mount really succeeds, i.e. when FERA runs as root.
     """
     script = charon_command(default_topology(), "a", strongswan_conf="/tmp/a.conf")[-1]
-    assert "mkdir -p /run/fera-testbed" in script
+    socket_dir = default_socket_dir()
+    assert f"mkdir -p {socket_dir}" in script
     # The directory must be created *after* the mount and *before* charon is exec'd.
-    assert script.index("mount -t tmpfs") < script.index("mkdir -p /run/fera-testbed")
-    assert script.index("mkdir -p /run/fera-testbed") < script.index("exec env STRONGSWAN_CONF")
+    assert script.index("mount -t tmpfs") < script.index(f"mkdir -p {socket_dir}")
+    assert script.index(f"mkdir -p {socket_dir}") < script.index("exec env STRONGSWAN_CONF")
 
 
 def test_charon_command_honours_an_explicit_socket_dir() -> None:
@@ -193,6 +200,33 @@ def test_charon_command_honours_an_explicit_socket_dir() -> None:
         default_topology(), "b", strongswan_conf="/tmp/b.conf", socket_dir="/tmp/ferab"
     )[-1]
     assert "mkdir -p /tmp/ferab" in script
+
+
+def test_root_socket_dir_lives_outside_the_shadowed_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """As root the socket may not live under /run: the tmpfs shadows it.
+
+    The private-runtime tmpfs is mounted over ``/var/run``, which is a symlink to
+    ``/run``, so ``/run`` disappears inside charon's mount namespace while
+    ``ip netns exec ... swanctl`` still sees the real one.  A socket under
+    ``/run`` is therefore unreachable from the client that must drive the daemon.
+    """
+    monkeypatch.delenv("FERA_SOCKET_DIR", raising=False)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    assert default_socket_dir() == Path(ROOT_SOCKET_DIR)
+    assert not str(default_socket_dir()).startswith("/run")
+
+
+def test_unprivileged_socket_dir_stays_under_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without root the mount is refused, so /run is intact and stays correct."""
+    monkeypatch.delenv("FERA_SOCKET_DIR", raising=False)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    assert default_socket_dir() == Path(DEFAULT_SOCKET_DIR)
+
+
+def test_socket_dir_override_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FERA_SOCKET_DIR", "/tmp/custom-sockets")
+    assert default_socket_dir() == Path("/tmp/custom-sockets")
+
 
 
 def test_charon_command_is_wrapped_for_its_endpoint() -> None:
