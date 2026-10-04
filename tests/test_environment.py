@@ -253,3 +253,60 @@ def test_write_environment_report(tmp_path: Path, repo_paths) -> None:
     target = write_environment_report(report, tmp_path / "environment.json")
     assert target.is_file()
     assert '"schema_version"' in target.read_text(encoding="utf-8")
+
+
+# --- capture interface in the endpoint's network namespace -----------------
+# Regression tests for a real failure: the per-endpoint namespace testbed
+# creates 'fera-va' inside the endpoint's namespace and never on the host, so a
+# check that read /sys/class/net reported a genuinely existing interface as
+# "does not exist" and aborted every real run before a packet was sent.
+
+_LINK_SHOW = (
+    "3: fera-va@if2: <BROADCAST,MULTICAST> mtu 1400 qdisc noqueue state UP\n"
+    "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN\n"
+)
+
+
+def test_interface_listing_reads_the_endpoint_namespace() -> None:
+    """With a prefix, interfaces are read inside that network namespace."""
+    runner = ScriptedRunner(responses=[("-o link show", 0, _LINK_SHOW)])
+    names = list_interfaces(runner, ("ip", "netns", "exec", "fera-a"))
+    assert names == ["fera-va"], "loopback and the @if suffix must be stripped"
+    assert ("ip", "netns", "exec", "fera-a", "ip", "-o", "link", "show") in runner.commands
+
+
+def test_interface_listing_is_empty_when_the_namespace_probe_fails() -> None:
+    """A failed probe yields no interfaces instead of raising."""
+    runner = ScriptedRunner(responses=[("-o link show", 1, "")])
+    assert list_interfaces(runner, ("ip", "netns", "exec", "gone")) == []
+
+
+def test_capture_interface_is_checked_in_the_endpoint_namespace(repo_paths) -> None:
+    """The check passes for an interface that only exists in the endpoint namespace."""
+    runner = ScriptedRunner(responses=[("-o link show", 0, _LINK_SHOW)])
+    report = check_environment(
+        repo_paths,
+        runner,
+        capture_interface="fera-va",
+        interface_command_prefix=("ip", "netns", "exec", "fera-a"),
+        include_tool_versions=False,
+    )
+    check = report.check("interfaces")
+    assert check is not None
+    assert check.status is CheckStatus.AVAILABLE
+    assert "fera-va" in check.detail
+
+
+def test_capture_interface_absent_from_the_endpoint_namespace_still_blocks(repo_paths) -> None:
+    """The namespace-aware check still blocks a genuinely missing interface."""
+    runner = ScriptedRunner(responses=[("-o link show", 0, _LINK_SHOW)])
+    report = check_environment(
+        repo_paths,
+        runner,
+        capture_interface="not-a-real-interface",
+        interface_command_prefix=("ip", "netns", "exec", "fera-a"),
+        include_tool_versions=False,
+    )
+    assert report.check("interfaces").status is CheckStatus.MISSING
+    assert report.ready is False
+

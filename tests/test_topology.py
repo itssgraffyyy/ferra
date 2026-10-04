@@ -170,6 +170,31 @@ def test_charon_command_starts_the_daemon_even_if_the_mount_is_refused() -> None
     assert "|| true;" in script, "a refused mount must not stop charon from starting"
 
 
+
+def test_charon_command_creates_the_vici_socket_dir_inside_the_private_tmpfs() -> None:
+    """A successful tmpfs mount must not leave charon without a VICI socket.
+
+    On a normal host ``/var/run`` is a symlink to ``/run``, so the tmpfs mount
+    over ``/var/run`` shadows ``/run`` itself.  The VICI socket is configured as
+    ``unix:///run/fera-testbed/charon-<key>.vici``; in the fresh tmpfs that
+    directory does not exist, charon binds **no** VICI socket at all, and every
+    ``swanctl`` call fails while the daemon looks healthy.  This only happens
+    when the mount really succeeds, i.e. when FERA runs as root.
+    """
+    script = charon_command(default_topology(), "a", strongswan_conf="/tmp/a.conf")[-1]
+    assert "mkdir -p /run/fera-testbed" in script
+    # The directory must be created *after* the mount and *before* charon is exec'd.
+    assert script.index("mount -t tmpfs") < script.index("mkdir -p /run/fera-testbed")
+    assert script.index("mkdir -p /run/fera-testbed") < script.index("exec env STRONGSWAN_CONF")
+
+
+def test_charon_command_honours_an_explicit_socket_dir() -> None:
+    script = charon_command(
+        default_topology(), "b", strongswan_conf="/tmp/b.conf", socket_dir="/tmp/ferab"
+    )[-1]
+    assert "mkdir -p /tmp/ferab" in script
+
+
 def test_charon_command_is_wrapped_for_its_endpoint() -> None:
     command = charon_command(default_topology(), "b", strongswan_conf="/tmp/b.conf")
     assert command[:4] == ["ip", "netns", "exec", "fera-b"]

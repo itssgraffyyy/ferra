@@ -319,6 +319,11 @@ class ExperimentRunner:
                 self.command_runner,
                 expected_ip_version=self.config.ip_version,
                 capture_interface=self.capture_interface(),
+                # The capture runs on the endpoint ("a"), so the interface must be
+                # looked up in that endpoint's namespace.  On the host a testbed
+                # interface such as fera-va does not exist, and checking it there
+                # would abort every real run with a false "does not exist".
+                interface_command_prefix=self.endpoint_prefix("a"),
             )
             write_json(self.experiment_dir / "environment.json", environment.to_dict())
             if not environment.ready:

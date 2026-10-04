@@ -160,6 +160,7 @@ def charon_command(
     strongswan_conf: Path | str,
     charon_binary: str = "/usr/lib/ipsec/charon",
     runtime_dir: str = CHARON_RUNTIME_DIR,
+    socket_dir: Path | str = DEFAULT_SOCKET_DIR,
 ) -> list[str]:
     """Full command that starts a dedicated charon instance for an endpoint.
 
@@ -175,6 +176,17 @@ def charon_command(
     tmpfs over the runtime directory is private to that daemon and disappears
     with it.
 
+    ``socket_dir`` is created inside that private tmpfs *before* charon starts.
+    This matters whenever the mount really succeeds, which is exactly the case
+    that privileges buy us: on a normal host ``/var/run`` is a symlink to
+    ``/run``, so mounting a tmpfs over ``/var/run`` shadows ``/run`` itself.
+    The VICI socket is configured as ``unix:///run/fera-testbed/charon-<key>.vici``,
+    so without this ``mkdir`` the directory does not exist in the fresh tmpfs,
+    charon binds **no** VICI socket at all, and every ``swanctl`` call fails
+    while the daemon looks perfectly healthy.  Unprivileged hosts never hit it
+    because the mount is denied and ``|| true`` swallows the error, leaving the
+    real ``/run`` intact -- which is why this only surfaced once FERA ran as root.
+
     The mount is best effort: if it is not permitted the daemon still starts,
     exactly as before, instead of never starting at all.
     """
@@ -185,6 +197,7 @@ def charon_command(
         "-c",
         (
             f"mount -t tmpfs -o rw tmpfs {shlex.quote(runtime_dir)} 2>/dev/null || true; "
+            f"mkdir -p {shlex.quote(str(socket_dir))}; "
             f"exec env STRONGSWAN_CONF={shlex.quote(str(strongswan_conf))} "
             f"{shlex.quote(charon_binary)}"
         ),

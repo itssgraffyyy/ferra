@@ -26,7 +26,7 @@ import os
 import platform
 import socket
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -580,15 +580,56 @@ def _check_netns(runner: BaseRunner) -> CheckResult:
     )
 
 
-def list_interfaces() -> list[str]:
-    """Return network interface names of the host (Linux: ``/sys/class/net``)."""
+def list_interfaces(
+    runner: BaseRunner | None = None,
+    command_prefix: Sequence[str] = (),
+) -> list[str]:
+    """Return network interface names of the host (Linux: ``/sys/class/net``).
+
+    ``command_prefix`` (e.g. ``ip netns exec fera-a``) lists the interfaces of
+    *that* network namespace instead.  The per-endpoint namespace testbed creates
+    ``fera-va`` inside the endpoint's namespace and never on the host, so reading
+    ``/sys/class/net`` would report an interface that genuinely exists as
+    "does not exist" and block every real run before a single packet is sent.
+    """
+    if command_prefix:
+        active = runner if runner is not None else SubprocessRunner()
+        result = active.run(
+            [*command_prefix, "ip", "-o", "link", "show"],
+            timeout=10.0,
+            check=False,
+        )
+        if not result.ok:
+            return []
+        names: list[str] = []
+        for line in (result.stdout or "").splitlines():
+            # "3: fera-va@if2: <BROADCAST,MULTICAST> mtu 1400 ..."  (peer suffix @if2)
+            # "1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 ..."          (no peer suffix)
+            # The name ends at "@" or the next ":", whichever comes first.
+            head = line.split(":", 1)
+            if len(head) < 2:
+                continue
+            name = head[1].strip().split("@", 1)[0].split(":", 1)[0].strip()
+            if name and name != "lo":
+                names.append(name)
+        return sorted(set(names))
     sysfs = Path("/sys/class/net")
     if sysfs.is_dir():
         return sorted(entry.name for entry in sysfs.iterdir() if entry.is_dir() and entry.name != "lo")
     return []
 
 
-def _check_interfaces(runner: BaseRunner, capture_interface: str | None) -> CheckResult:
+def _check_interfaces(
+    runner: BaseRunner,
+    capture_interface: str | None,
+    command_prefix: Sequence[str] = (),
+) -> CheckResult:
+    """Whether the capture interface exists.
+
+    ``command_prefix`` is the endpoint's prefix (``ip netns exec <ns>``), so the
+    interface is looked up in the namespace where the capture will actually run
+    rather than on the host, where a testbed interface does not exist at all.
+    """
     if platform.system() != "Linux":
         return CheckResult(
             key="interfaces",
@@ -598,7 +639,7 @@ def _check_interfaces(runner: BaseRunner, capture_interface: str | None) -> Chec
             required=False,
             remediation="on Linux the interface list is read from /sys/class/net",
         )
-    available = list_interfaces()
+    available = list_interfaces(runner, command_prefix)
     if capture_interface is None:
         return CheckResult(
             key="interfaces",
@@ -686,12 +727,16 @@ def check_environment(
     *,
     expected_ip_version: int | None = None,
     capture_interface: str | None = None,
+    interface_command_prefix: Sequence[str] = (),
     include_tool_versions: bool = True,
 ) -> EnvironmentReport:
     """Run all capability checks and return the report.
 
     ``expected_ip_version`` marks the IPv6 check as mandatory for IPv6
-    experiments; ``capture_interface`` (when given) must exist on this host.
+    experiments.  ``capture_interface`` (when given) must exist; it is looked up
+    behind ``interface_command_prefix`` (the endpoint's prefix, e.g.
+    ``ip netns exec fera-a``) so a namespace-local testbed interface is checked
+    in the namespace it belongs to rather than on the host.
     """
     active_runner = runner if runner is not None else SubprocessRunner()
     resolved_paths = paths if paths is not None else default_paths()
@@ -707,7 +752,7 @@ def check_environment(
         _check_capture_tool(active_runner),
         _check_ipv6(active_runner, required=expected_ip_version == 6),
         _check_netns(active_runner),
-        _check_interfaces(active_runner, capture_interface),
+        _check_interfaces(active_runner, capture_interface, interface_command_prefix),
         _check_wsl(),
         _check_tool(
             "strongswan",
