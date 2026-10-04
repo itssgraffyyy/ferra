@@ -183,9 +183,9 @@ def _count(values: Sequence[str]) -> dict[str, int]:
 class PreparedData:
     """Model-ready matrices of one dataset, with the grouping keys kept beside them.
 
-    ``groups`` is retained per split so a report can state how many *experiments*
-    a metric rests on, not just how many rows - three captures of one run are one
-    piece of evidence, not three.
+    ``groups`` is retained per split so a report can state how many *sessions*
+    a metric rests on, not just how many rows - three repeats of one
+    configuration are one piece of evidence, not three.
     """
 
     feature_names: tuple[str, ...]
@@ -240,7 +240,7 @@ def prepare_dataset(
     integrity = split_integrity(samples)
     if not integrity["ok"]:
         raise _training_error(
-            "grouped split integrity violated: captures of one experiment straddle a split boundary",
+            "grouped split integrity violated: captures of one session straddle a split boundary",
             overlapping=integrity["overlapping_groups"],
         )
     indices = [next(index for index, candidate in enumerate(FEATURE_WHITELIST, start=0) if candidate == name) for name in names]

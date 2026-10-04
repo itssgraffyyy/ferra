@@ -139,10 +139,14 @@ and risk bands are a curated opinion encoded once, in `fera.security.policy`.
 * Features describe traffic *behaviour* only - counts, sizes, timing, direction
   split.  Payload content, configuration values, and labels never enter a
   feature vector, and non-finite values are rejected instead of clipped.
-* Splits are grouped by experiment id, so near-duplicate captures of one run
+* Splits are grouped by **session id**, so near-duplicate captures of one run
   cannot straddle a train/test boundary and inflate a reported accuracy.  The
-  exact group keys per split are recorded in the training report as a leakage
-  audit trail.
+  session — not the experiment id — is the grouping key on purpose: repeats of
+  one configuration get distinct experiment ids, and grouping on those would put
+  two windows of the same tunnel on opposite sides of the boundary.  Ground truth
+  written before sessions existed falls back to the experiment id.  The exact
+  group keys per split are recorded in the training report as a leakage audit
+  trail, and `split_integrity()` fails loudly if any key straddles a boundary.
 * Selection uses validation macro-F1 only; the test block is opened once, after
   the winner exists.
 * **Shortcut risk is measured, not assumed.**  `ablate_feature_sets` re-runs the

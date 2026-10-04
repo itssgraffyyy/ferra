@@ -126,7 +126,7 @@ guarantees a report cannot claim evidence the analysis does not have.
 
 ### 7. `fera.ml`
 * **Feature Extraction (`features.py`)**: 37 whitelisted statistical features (`FEATURE_WHITELIST`, `FEATURE_SCHEMA`) derived only from analysis output plus PCAP frame headers. Ground truth and configuration values never enter the vector, and non-finite values are refused rather than clipped.
-* **Dataset Factory (`dataset.py`)**: joins feature vectors with ground-truth labels (`DATASET_SCHEMA`), assigns grouped train/val/test splits per experiment id so near-duplicate captures cannot straddle a boundary, and validates documents both when written and when read back.
+* **Dataset Factory (`dataset.py`)**: joins feature vectors with ground-truth labels (`DATASET_SCHEMA`), assigns grouped train/val/test splits per **session id** so near-duplicate captures cannot straddle a boundary, and validates documents both when written and when read back.  The session is the grouping key rather than the experiment id because repeats of one configuration carry distinct ids; grouping on those would split one tunnel's captures across the boundary.
 
 ### 8. `fera.security`
 * **Context (`context.py`)**: adapts an analysis document - optionally the testbed configuration and a classifier prediction - into one `AssessmentContext`. Each piece of information keeps the grade of the source it came from.
