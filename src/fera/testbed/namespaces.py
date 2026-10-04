@@ -21,7 +21,46 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from ..common.logging_utils import get_logger
 from .topology import TestbedTopology
+
+logger = get_logger("fera.testbed.namespaces")
+
+#: Environment variable that selects how a command is moved into a namespace.
+#:
+#: ``ip`` (default) uses ``ip netns exec``.  ``nsenter`` uses
+#: ``nsenter --net=/run/netns/<ns>``, which enters *only* the network namespace.
+NETNS_LAUNCHER_ENV = "FERA_NETNS_LAUNCHER"
+
+#: Where the kernel keeps the bind mount for each named network namespace.
+NETNS_RUN_DIR = "/run/netns"
+
+
+def netns_launcher() -> str:
+    """Return the namespace launcher to use (``"ip"`` or ``"nsenter"``)."""
+    requested = (os.environ.get(NETNS_LAUNCHER_ENV) or "ip").strip().lower()
+    if requested not in {"ip", "nsenter"}:
+        logger.warning(
+            "%s=%r is not a known launcher (ip|nsenter); falling back to 'ip'",
+            NETNS_LAUNCHER_ENV,
+            requested,
+        )
+        return "ip"
+    return requested
+
+
+def netns_prefix(netns: str) -> list[str]:
+    """Command prefix that moves a command into ``netns``.
+
+    ``ip netns exec`` does not merely switch network namespaces: it also creates
+    a mount namespace and bind-remounts ``/sys`` for the target namespace, so a
+    daemon started through it sees a different ``/sys`` from every other process
+    on the host.  That side effect is easy to mistake for a property of the
+    network namespace itself, so the two are selectable independently.
+    """
+    if netns_launcher() == "nsenter":
+        return ["nsenter", f"--net={NETNS_RUN_DIR}/{netns}"]
+    return ["ip", "netns", "exec", netns]
 
 #: Directory for the per endpoint VICI sockets.  Unix sockets must live on a
 #: local Linux filesystem: the repository is often a mounted Windows volume

@@ -142,10 +142,22 @@ class Endpoint:
 
         ``command_prefix`` is used verbatim as an argument array - the runner
         never builds shell strings, so this cannot be abused for injection.
+
+        The namespace launcher is selectable because ``ip netns exec`` does more
+        than enter the network namespace: it also creates a *mount* namespace and
+        bind-remounts ``/sys`` for the target namespace, so anything it starts
+        sees a different ``/sys`` from the rest of the system.  Set
+        ``FERA_NETNS_LAUNCHER=nsenter`` to enter only the network namespace and
+        leave ``/sys`` alone, which keeps the two effects separable.  Unlike
+        ``ip netns exec``, ``nsenter`` keeps the caller's mount namespace, so a
+        per-endpoint runtime directory must be created explicitly by the caller.
         """
         prefix = list(self.command_prefix)
         if not prefix and self.netns:
-            prefix = ["ip", "netns", "exec", self.netns]
+            # Imported here, not at module scope: namespaces imports this module.
+            from .namespaces import netns_prefix  # noqa: PLC0415 - avoids a cycle
+
+            prefix = netns_prefix(self.netns)
         return [*prefix, *command]
 
     def to_dict(self) -> dict[str, Any]:

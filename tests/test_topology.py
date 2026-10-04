@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from fera.testbed.namespaces import (
     ROOT_SOCKET_DIR,
     charon_command,
     default_socket_dir,
+    netns_launcher,
+    netns_prefix,
 )
 from fera.testbed.topology import (
     DEFAULT_TOPOLOGY_DOCUMENT,
@@ -233,3 +236,43 @@ def test_charon_command_is_wrapped_for_its_endpoint() -> None:
     command = charon_command(default_topology(), "b", strongswan_conf="/tmp/b.conf")
     assert command[:4] == ["ip", "netns", "exec", "fera-b"]
     assert command[4] == "sh" and command[5] == "-c"
+
+
+# --- namespace launcher -----------------------------------------------------
+# `ip netns exec` does not only switch network namespaces: it also creates a
+# mount namespace and bind-remounts /sys for the target namespace.  That side
+# effect is easy to confuse with a property of the network namespace, so the two
+# are selectable independently and each is pinned here.
+
+
+def test_default_launcher_is_ip_netns_exec(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FERA_NETNS_LAUNCHER", raising=False)
+    assert netns_prefix("fera-a") == ["ip", "netns", "exec", "fera-a"]
+    assert default_topology().endpoint_a.wrap_command(["ip", "addr"]) == [
+        "ip", "netns", "exec", "fera-a", "ip", "addr",
+    ]
+
+
+def test_nsenter_launcher_enters_only_the_network_namespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FERA_NETNS_LAUNCHER", "nsenter")
+    assert netns_prefix("fera-a") == ["nsenter", "--net=/run/netns/fera-a"]
+    assert default_topology().endpoint_b.wrap_command(["swanctl"]) == [
+        "nsenter", "--net=/run/netns/fera-b", "swanctl",
+    ]
+
+
+def test_unknown_launcher_falls_back_to_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FERA_NETNS_LAUNCHER", "sudo-sandwich")
+    assert netns_launcher() == "ip"
+    assert netns_prefix("fera-a") == ["ip", "netns", "exec", "fera-a"]
+
+
+def test_explicit_command_prefix_beats_the_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A topology that names its own prefix is used verbatim, launcher or not."""
+    monkeypatch.setenv("FERA_NETNS_LAUNCHER", "nsenter")
+    endpoint = default_topology().endpoint_a
+    # A copy, not a mutation: object.__setattr__ on the shared topology would
+    # leak into every later test, and monkeypatch cannot undo it.
+    custom = dataclasses.replace(endpoint, command_prefix=("docker", "exec", "ep-a"))
+    assert custom.wrap_command(["ping", "-c1"]) == ["docker", "exec", "ep-a", "ping", "-c1"]
+
