@@ -53,8 +53,32 @@ sockets now come up unprivileged.
 
 **Still blocking a real run:**
 
-* `swanctl` accepts the VICI connection but never receives a reply, so
-  `--load-conns` / `--initiate` hang. Root cause not yet identified.
+* **`swanctl` connects to charon and never gets a reply.** Narrowed to charon
+  itself, not to FERA or the testbed. Reproduced with a *standalone* charon and
+  a minimal `strongswan.conf` — no FERA code, no namespace testbed, no `--uri`,
+  no orphans, no pidfile contention:
+
+  ```
+  connect(...)           -> ok, 0.00s
+  send({"command": ...}) -> ok, 0.01s
+  recv()                 -> TIMEOUT after 6.10s
+  swanctl --stats        -> exit 124 (killed by timeout)
+  ```
+
+  charon is demonstrably alive while it does this: it logs
+  `spawning 8 worker threads`, installs bypass policies and reports interface
+  changes. The **mechanism is still not identified**, and `/proc/<pid>/wchan`
+  cannot settle it here — on this kernel even an ordinary sleeping process
+  reports `wchan` as `0`, so a wait-channel reading is not evidence of what a
+  thread is doing.
+
+  What can be said is bounded: charon on this host accepts a VICI connection
+  and never answers a request on it, which makes `--load-conns` / `--initiate`
+  hang indefinitely. A non-WSL Linux host is the practical way around it. This
+  is not something FERA can configure its way out of, and the §1.2 gates are
+  written to fail safely because of it: a run that cannot prove its evidence
+  never claims integration.
+
 * `libstrongswan-standard-plugins` is not installed, and it is the package
   that ships `gcm.so` / `ctr.so` / `ccm.so`. Without it strongSwan cannot
   negotiate `aes128gcm16`, so **every AES-GCM entry of the matrix is
