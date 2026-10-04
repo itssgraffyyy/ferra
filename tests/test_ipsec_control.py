@@ -79,9 +79,17 @@ def test_initiate_places_the_uri_after_the_child_name() -> None:
 
 @pytest.mark.skipif(shutil.which("swanctl") is None, reason="swanctl is not installed")
 def test_swansctl_accepts_the_generated_option_order() -> None:
-    """Let swanctl itself check the order: only it knows its option grammar."""
+    """Let swanctl itself check the order: only it knows its option grammar.
+
+    ``--uri`` is a *subcommand* option, so it only parses after the subcommand.
+    The probe uses ``--list-sas`` because ``--version`` returns before option
+    parsing and would accept anything, proving nothing.
+
+    ``--list-sas`` on a socket that does not exist still proves the point: the
+    error must be a *connection* error, never an *option* error.
+    """
     result = subprocess.run(
-        ["swanctl", "--version", "--uri", "unix:///tmp/fera-does-not-exist.vici"],
+        ["swanctl", "--list-sas", "--uri", "unix:///tmp/fera-does-not-exist.vici"],
         capture_output=True,
         text=True,
         timeout=30,
@@ -89,4 +97,19 @@ def test_swansctl_accepts_the_generated_option_order() -> None:
     )
     output = (result.stdout or "") + (result.stderr or "")
     assert "unrecognized option" not in output, output
+    assert "fera-does-not-exist.vici" in output, output
+
+
+@pytest.mark.skipif(shutil.which("swanctl") is None, reason="swanctl is not installed")
+def test_uri_before_the_subcommand_is_rejected() -> None:
+    """The ordering FERA uses is the only ordering swanctl accepts."""
+    result = subprocess.run(
+        ["swanctl", "--uri", "unix:///tmp/fera-does-not-exist.vici", "--list-sas"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    output = (result.stdout or "") + (result.stderr or "")
+    assert "unrecognized option '--uri'" in output, output
 
