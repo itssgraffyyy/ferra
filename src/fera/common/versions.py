@@ -8,6 +8,7 @@ is still valid, it just cannot claim a version for it.
 
 from __future__ import annotations
 
+import os
 import platform
 import re
 import sys
@@ -17,6 +18,9 @@ from typing import Any
 from .process import BaseRunner
 
 #: Tool -> version query arguments.
+#: Default budget for a ``tool --version`` probe; see :func:`version_probe_timeout`.
+DEFAULT_VERSION_TIMEOUT = 120.0
+
 VERSION_ARGUMENTS: Mapping[str, Sequence[str]] = {
     "swanctl": ("--version",),
     "ipsec": ("--version",),
@@ -64,20 +68,39 @@ def parse_version(raw: str | None) -> str | None:
     return None
 
 
+def version_probe_timeout() -> float:
+    """Budget for one ``tool --version`` probe.
+
+    Overridable with ``FERA_VERSION_TIMEOUT`` (seconds).  Defaults to 120s:
+    version probing is bookkeeping, never a gate, and on a slow host ``tshark -v``
+    has been measured at ~68s, which a 15s budget silently turned into "version
+    unknown" plus 15 wasted seconds per tool.
+    """
+    raw = os.environ.get("FERA_VERSION_TIMEOUT")
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            return DEFAULT_VERSION_TIMEOUT
+        return value if value > 0 else DEFAULT_VERSION_TIMEOUT
+    return DEFAULT_VERSION_TIMEOUT
+
+
 def tool_version(
     tool: str,
     runner: BaseRunner,
     *,
     arguments: Sequence[str] | None = None,
-    timeout: float = 15.0,
+    timeout: float | None = None,
 ) -> str | None:
     """Return the version of ``tool`` or ``None`` when it is unavailable."""
     path = runner.which(tool)
     if path is None:
         return None
+    budget = version_probe_timeout() if timeout is None else timeout
     args = tuple(arguments) if arguments is not None else tuple(VERSION_ARGUMENTS.get(tool, ("--version",)))
     try:
-        result = runner.run([tool, *args], timeout=timeout)
+        result = runner.run([tool, *args], timeout=budget)
     except Exception:  # noqa: BLE001 - version probing must never break a run
         return None
     if not result.executed:
@@ -92,13 +115,21 @@ def collect_tool_versions(
     runner: BaseRunner,
     tools: Iterable[str] | None = None,
     *,
-    timeout: float = 15.0,
+    timeout: float | None = None,
 ) -> dict[str, str | None]:
-    """Collect versions for all requested tools (in a stable order)."""
+    """Collect versions for all requested tools (in a stable order).
+
+    ``timeout`` defaults to :func:`version_probe_timeout`, which is read from
+    ``FERA_VERSION_TIMEOUT`` and otherwise generous.  The old fixed 15s was
+    measured to be far too short on slow hosts: ``tshark -v`` needs ~68s there,
+    so every run burned the full budget and then recorded tshark as having no
+    version at all - indistinguishable from tshark being broken.
+    """
+    budget = version_probe_timeout() if timeout is None else timeout
     requested = list(tools) if tools is not None else list(VERSION_ARGUMENTS)
     versions: dict[str, str | None] = {}
     for tool in requested:
-        versions[tool] = tool_version(tool, runner, timeout=timeout)
+        versions[tool] = tool_version(tool, runner, timeout=budget)
     return versions
 
 
