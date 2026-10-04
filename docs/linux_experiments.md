@@ -80,12 +80,26 @@ sockets now come up unprivileged.
   `starter`'s), there is no configuration-only route to an SA from inside a
   user namespace. Running the testbed as **real root** is the way round it.
 
-* `libstrongswan-standard-plugins` is not installed, and it is the package
-  that ships `gcm.so` / `ctr.so` / `ccm.so`. Without it strongSwan cannot
-  negotiate `aes128gcm16`, so **every AES-GCM entry of the matrix is
-  unrunnable on such a host** (the kernel offers `rfc4106(gcm(aes))`; strongSwan
-  userspace does not). Install with
-  `sudo apt-get install libstrongswan-standard-plugins`.
+* **Two defects that only appear with privileges** (`fd17e8f`). Running as
+  real root is what first made the daemon usable, and it immediately exposed
+  two bugs that had been invisible, because both had a *privileged* failure
+  mode and an *unprivileged* fallback that worked:
+
+  | Defect | Symptom | Why unprivileged runs looked fine |
+  |---|---|---|
+  | capture interface looked up on the host | `environment not ready: ... capture interface 'fera-va' does not exist` — the run aborted before any traffic | `fera-va` is inside the endpoint namespace and never on the host, so `/sys/class/net` cannot see it; the check now probes `ip -o link show` behind the endpoint prefix |
+  | successful tmpfs mount hid `/run` | charon bound **no** VICI socket, though `charon.ctl`/`.lkp`/`.enfy` were all present and the daemon looked healthy | `/var/run` is a symlink to `/run`, so the private-runtime tmpfs shadows `/run` itself and `/run/fera-testbed/` vanishes — but unprivileged the mount is denied and `\|\| true` swallows it, leaving the real `/run` intact |
+
+  The second one is a trap worth stating plainly: *the thing that grants root
+  access is the thing that breaks the daemon.* The socket directory is now
+  created inside the private tmpfs before charon is exec'd.
+
+* `libstrongswan-standard-plugins` ships `gcm.so` / `ctr.so` / `ccm.so`.
+  Without it strongSwan cannot negotiate `aes128gcm16`, so **every AES-GCM
+  entry of the matrix is unrunnable** (the kernel offers `rfc4106(gcm(aes))`;
+  strongSwan userspace does not). It was missing here and is **now installed**:
+  `/usr/lib/ipsec/plugins/libstrongswan-gcm.so` is present on this host, so
+  GCM is no longer a blocker.
 
 ### 1.1.1 Genuine ESP without strongSwan
 
