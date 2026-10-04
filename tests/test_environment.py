@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 from pathlib import Path
@@ -309,4 +310,98 @@ def test_capture_interface_absent_from_the_endpoint_namespace_still_blocks(repo_
     )
     assert report.check("interfaces").status is CheckStatus.MISSING
     assert report.ready is False
+
+
+# --- endpoint VICI liveness -------------------------------------------------
+# Regression tests for the failure that cost this project eleven instrumented
+# runs: a per-endpoint charon that binds and listens on its VICI socket, accepts
+# the connection, and then never answers.  Nothing else in the environment
+# report sees it, and it surfaced only much later as IPSEC_CONFIG_APPLY_FAILED.
+
+_SOCKETS = {
+    "a": "unix:///var/lib/fera-testbed/charon-a.vici",
+    "b": "unix:///var/lib/fera-testbed/charon-b.vici",
+}
+
+
+def test_vici_liveness_passes_when_every_endpoint_answers(repo_paths) -> None:
+    runner = ScriptedRunner(responses=[("--list-sas", 0, "")])
+    report = check_environment(
+        repo_paths, runner, vici_sockets=_SOCKETS, include_tool_versions=False
+    )
+    check = report.check("vici_liveness")
+    assert check is not None
+    assert check.status is CheckStatus.AVAILABLE
+    assert check.evidence["results"] == {"a": "answering", "b": "answering"}
+
+
+class _TimingOutRunner(ScriptedRunner):
+    """Reports the result FERA really gets when a daemon never answers.
+
+    ``ScriptedRunner`` only sets a return code, but the real runner sets
+    ``timed_out`` when it kills a command at its budget - which is exactly the
+    case this check exists to describe.
+    """
+
+    def run(self, command, *, timeout=60.0, check=False, not_found_code=None, env=None, cwd=None, input_text=None):  # noqa: ANN001, ANN201, ARG002
+        result = super().run(
+            command,
+            timeout=timeout,
+            check=check,
+            not_found_code=not_found_code,
+            env=env,
+            cwd=cwd,
+            input_text=input_text,
+        )
+        if "--list-sas" in " ".join(str(part) for part in command):
+            return dataclasses.replace(result, timed_out=True)
+        return result
+
+
+def test_vici_liveness_blocks_when_an_endpoint_never_answers(repo_paths) -> None:
+    """A bound-but-silent daemon must block, naming the endpoint and the reason."""
+    runner = _TimingOutRunner()
+    report = check_environment(
+        repo_paths, runner, vici_sockets=_SOCKETS, include_tool_versions=False
+    )
+    check = report.check("vici_liveness")
+    assert check.status is CheckStatus.MISSING
+    assert "no reply within" in check.detail
+    assert "start-charon" in check.remediation
+    assert report.ready is False, "a dead control plane must not report a ready environment"
+
+
+def test_vici_liveness_reports_the_uri_after_the_subcommand(repo_paths) -> None:
+    """--uri is a swanctl subcommand option, so it must not come first."""
+    runner = ScriptedRunner(responses=[("--list-sas", 0, "")])
+    check_environment(repo_paths, runner, vici_sockets=_SOCKETS, include_tool_versions=False)
+    probes = [c for c in runner.commands if "--list-sas" in " ".join(c)]
+    assert probes, "the liveness check must actually probe"
+    for command in probes:
+        assert list(command[:2]) == ["swanctl", "--list-sas"]
+        assert command[2] == "--uri"
+    assert {c[3] for c in probes} == set(_SOCKETS.values())
+
+
+def test_vici_liveness_distinguishes_a_missing_socket(repo_paths) -> None:
+    runner = ScriptedRunner(
+        responses=[("--list-sas", 1, "connecting to 'x' failed: No such file or directory")]
+    )
+    report = check_environment(
+        repo_paths, runner, vici_sockets=_SOCKETS, include_tool_versions=False
+    )
+    assert report.check("vici_liveness").evidence["results"] == {
+        "a": "socket missing",
+        "b": "socket missing",
+    }
+
+
+def test_vici_liveness_is_unverified_for_a_host_daemon_topology(repo_paths) -> None:
+    """Without private per-endpoint sockets there is nothing to probe."""
+    report = check_environment(
+        repo_paths, ScriptedRunner(), include_tool_versions=False
+    )
+    check = report.check("vici_liveness")
+    assert check.status is CheckStatus.UNVERIFIED
+    assert check.required is False
 

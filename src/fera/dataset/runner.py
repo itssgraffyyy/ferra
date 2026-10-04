@@ -210,6 +210,15 @@ class ExperimentRunner:
             )
         return self._controllers[key]
 
+    def _vici_sockets(self) -> dict[str, str]:
+        """VICI URIs of the per-endpoint daemons, keyed by endpoint."""
+        sockets: dict[str, str] = {}
+        for key in ("a", "b"):
+            uri = self._vici_uri(key)
+            if uri:
+                sockets[key] = uri
+        return sockets
+
     def _vici_uri(self, key: str) -> str | None:
         """VICI URI of an endpoint.
 
@@ -324,6 +333,10 @@ class ExperimentRunner:
                 # interface such as fera-va does not exist, and checking it there
                 # would abort every real run with a false "does not exist".
                 interface_command_prefix=self.endpoint_prefix("a"),
+                # A bound socket is not a working one: charon can listen, accept
+                # and then never answer.  Probe each endpoint before spending a
+                # 20s capture on an experiment that cannot reach its control plane.
+                vici_sockets=self._vici_sockets(),
             )
             write_json(self.experiment_dir / "environment.json", environment.to_dict())
             if not environment.ready:

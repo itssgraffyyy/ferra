@@ -19,7 +19,13 @@ from .process import BaseRunner
 
 #: Tool -> version query arguments.
 #: Default budget for a ``tool --version`` probe; see :func:`version_probe_timeout`.
-DEFAULT_VERSION_TIMEOUT = 120.0
+#:
+#: Deliberately unchanged at 15s.  Raising it to cover a slow host was tried and
+#: reverted: ``tshark -v`` needs ~68s on one measured machine, so a 120s default
+#: made the probe succeed - and made every environment check that runs real tools
+#: (the test suite included) wait for it, roughly quadrupling the gate.  Slow
+#: hosts should set ``FERA_VERSION_TIMEOUT`` instead of every host paying for it.
+DEFAULT_VERSION_TIMEOUT = 15.0
 
 VERSION_ARGUMENTS: Mapping[str, Sequence[str]] = {
     "swanctl": ("--version",),
@@ -71,10 +77,11 @@ def parse_version(raw: str | None) -> str | None:
 def version_probe_timeout() -> float:
     """Budget for one ``tool --version`` probe.
 
-    Overridable with ``FERA_VERSION_TIMEOUT`` (seconds).  Defaults to 120s:
-    version probing is bookkeeping, never a gate, and on a slow host ``tshark -v``
-    has been measured at ~68s, which a 15s budget silently turned into "version
-    unknown" plus 15 wasted seconds per tool.
+    Overridable with ``FERA_VERSION_TIMEOUT`` (seconds), which is how a slow host
+    gets a longer budget: ``tshark -v`` has been measured at ~68s on one machine,
+    where the 15s default reports tshark as having no version - indistinguishable
+    from tshark being broken.  The default stays 15s so that hosts which do not
+    need it do not pay for those who do.
     """
     raw = os.environ.get("FERA_VERSION_TIMEOUT")
     if raw:

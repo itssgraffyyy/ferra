@@ -721,6 +721,80 @@ def _check_wsl() -> CheckResult:
     )
 
 
+def _check_vici_liveness(
+    runner: BaseRunner,
+    sockets: Mapping[str, str],
+    *,
+    timeout: float = 30.0,
+) -> CheckResult:
+    """Whether the per-endpoint charon instances actually *answer* on VICI.
+
+    This is deliberately a round-trip probe, not a socket-file test.  A bound
+    socket proves very little: a charon instance can create and listen on its
+    VICI socket, accept a connection, and then never service the request.  That
+    failure is invisible to every other check here, and it surfaces much later
+    as ``IPSEC_CONFIG_APPLY_FAILED`` on the first ``swanctl --load-conns``,
+    which reads like a configuration problem rather than a dead control plane.
+
+    ``--uri`` is a *subcommand* option of swanctl, so it must follow the
+    subcommand; swanctl has no global ``--uri``.
+    """
+    if not sockets:
+        return CheckResult(
+            key="vici_liveness",
+            label="Endpoint VICI liveness",
+            status=CheckStatus.UNVERIFIED,
+            detail="no per-endpoint VICI sockets configured (host daemon topology)",
+            required=False,
+            remediation="only namespace-based endpoints have private VICI sockets",
+        )
+    results: dict[str, str] = {}
+    unresponsive: list[str] = []
+    missing: list[str] = []
+    for key, uri in sorted(sockets.items()):
+        result = runner.run(
+            ["swanctl", "--list-sas", "--uri", uri],
+            timeout=timeout,
+            check=False,
+        )
+        if not result.executed:
+            results[key] = "not executed (dry run)"
+        elif result.ok:
+            results[key] = "answering"
+        elif "No such file or directory" in (result.stderr or "") + (result.stdout or ""):
+            missing.append(key)
+            results[key] = "socket missing"
+        elif result.timed_out:
+            unresponsive.append(key)
+            results[key] = f"no reply within {timeout:g}s"
+        else:
+            unresponsive.append(key)
+            results[key] = f"failed (rc={result.returncode})"
+    if unresponsive or missing:
+        parts = [f"{k}: {results[k]}" for k in sorted(sockets) if k in unresponsive or k in missing]
+        return CheckResult(
+            key="vici_liveness",
+            label="Endpoint VICI liveness",
+            status=CheckStatus.MISSING,
+            detail="; ".join(parts),
+            required=True,
+            remediation=(
+                "the per-endpoint charon must answer VICI before an experiment can "
+                "start; restart it with scripts/setup_netns_testbed.py --apply "
+                "--start-charon and re-check `swanctl --list-sas --uri <socket>`"
+            ),
+            evidence={"sockets": dict(sockets), "results": results},
+        )
+    return CheckResult(
+        key="vici_liveness",
+        label="Endpoint VICI liveness",
+        status=CheckStatus.AVAILABLE,
+        detail=f"{len(sockets)} endpoint daemon(s) answering on VICI",
+        required=True,
+        evidence={"sockets": dict(sockets), "results": results},
+    )
+
+
 def check_environment(
     paths: ProjectPaths | None = None,
     runner: BaseRunner | None = None,
@@ -728,6 +802,7 @@ def check_environment(
     expected_ip_version: int | None = None,
     capture_interface: str | None = None,
     interface_command_prefix: Sequence[str] = (),
+    vici_sockets: Mapping[str, str] | None = None,
     include_tool_versions: bool = True,
 ) -> EnvironmentReport:
     """Run all capability checks and return the report.
@@ -753,6 +828,7 @@ def check_environment(
         _check_ipv6(active_runner, required=expected_ip_version == 6),
         _check_netns(active_runner),
         _check_interfaces(active_runner, capture_interface, interface_command_prefix),
+        _check_vici_liveness(active_runner, vici_sockets or {}),
         _check_wsl(),
         _check_tool(
             "strongswan",
