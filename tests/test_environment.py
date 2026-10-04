@@ -21,6 +21,7 @@ from fera.common.versions import parse_version
 from fera.testbed.environment import (
     CheckStatus,
     EnvironmentReport,
+    _check_charon,
     check_environment,
     is_wsl,
     list_interfaces,
@@ -72,6 +73,67 @@ def test_recording_runner_raises_when_check_is_requested() -> None:
     )
     with pytest.raises(FeraError):
         runner.run(["swanctl", "--list-sas"], check=True)
+
+
+# --- charon / VICI probing --------------------------------------------------
+
+
+class _ViciRunner:
+    """Runner returning a scripted ``swanctl --stats`` outcome."""
+
+    name = "vici"
+
+    def __init__(self, *, tools=("swanctl",), returncode=0, timed_out=False, stderr="") -> None:
+        self._tools = tuple(tools)
+        self._returncode = returncode
+        self._timed_out = timed_out
+        self._stderr = stderr
+
+    def which(self, tool):
+        return f"/usr/bin/{tool}" if tool in self._tools else None
+
+    def run(self, command, **_kwargs):
+        return CommandResult(
+            tuple(str(part) for part in command),
+            self._returncode,
+            "",
+            self._stderr,
+            15.0,
+            executed=True,
+            timed_out=self._timed_out,
+        )
+
+
+def test_charon_is_available_when_the_daemon_answers() -> None:
+    result = _check_charon(_ViciRunner())
+    assert result.status is CheckStatus.AVAILABLE
+    assert "reachable" in result.detail
+
+
+def test_charon_is_missing_when_swanctl_is_absent() -> None:
+    result = _check_charon(_ViciRunner(tools=()))
+    assert result.status is CheckStatus.MISSING
+    assert "swanctl is missing" in result.detail
+
+
+def test_charon_is_missing_when_no_daemon_answers() -> None:
+    result = _check_charon(_ViciRunner(returncode=1, stderr="no such file or directory"))
+    assert result.status is CheckStatus.MISSING
+    assert "no daemon" in result.detail
+
+
+def test_an_unresponsive_daemon_is_unverified_not_missing() -> None:
+    """A daemon that never answers is not the same as no daemon at all.
+
+    Both look like a failed ``swanctl --stats``, but they need different fixes.
+    Reporting MISSING for a hung daemon names a cause that is not the cause and
+    sends the operator to install or start strongSwan for no reason.
+    """
+    result = _check_charon(_ViciRunner(timed_out=True))
+    assert result.status is CheckStatus.UNVERIFIED
+    assert "unresponsive" in result.detail
+    assert "not the same as no daemon" in result.detail
+    assert "no daemon on the default vici socket" not in result.detail
 
 
 def test_command_result_serialisation_keeps_tails() -> None:

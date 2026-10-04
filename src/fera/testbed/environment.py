@@ -416,6 +416,28 @@ def _check_charon(runner: BaseRunner) -> CheckResult:
             required=False,
         )
     stderr = (result.stderr or "").strip()
+    if result.timed_out:
+        # A daemon that accepts the connection but never answers is not the same
+        # as no daemon at all, and the two need different fixes: "no daemon"
+        # sends the operator to install or start strongSwan, while a silent
+        # daemon is a strongSwan/platform problem.  Reporting MISSING would name
+        # a cause that is not the cause.
+        return CheckResult(
+            key="charon",
+            label="charon daemon (vici)",
+            status=CheckStatus.UNVERIFIED,
+            detail=(
+                "`swanctl --stats` did not answer within 15s: a daemon may be "
+                "present but unresponsive, which is not the same as no daemon"
+            ),
+            required=False,
+            remediation=(
+                "check whether strongSwan works on this host at all (swanctl "
+                "--version, then a VICI query); a daemon that accepts a "
+                "connection but never replies is not something FERA can "
+                "configure away"
+            ),
+        )
     return CheckResult(
         key="charon",
         label="charon daemon (vici)",
