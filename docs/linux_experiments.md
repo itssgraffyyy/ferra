@@ -53,46 +53,80 @@ sockets now come up unprivileged.
 
 **Still blocking a full strongSwan run:**
 
-* **charon does not start inside a user namespace on this host.** charon itself
-  is fine here: the distribution's own instance answers VICI correctly
-  (`swanctl --stats` reports `uptime: 12 hours`, 16 worker threads,
-  `IKE_SAs: 0 total`), so this is neither a kernel nor a strongSwan fault. What
-  fails is an instance started under `unshare -Urnm`, which loads its plugins,
-  logs `spawning N worker threads`, and then never services anything:
+* **A charon started in a network namespace accepts VICI connections and never
+  answers them.** This is where the work actually stands after eleven
+  instrumented runs. The daemon is *not* broken and *not* stuck in
+  initialisation — as **real root** it starts completely:
 
   ```
-  connect(...)           -> ok, 0.00s
-  send({"command": ...}) -> ok, 0.01s
-  recv()                 -> TIMEOUT after 6.10s
-  swanctl --stats        -> exit 124 (killed by timeout)
-  ipsec listalgs         -> exit 124   (stroke is dead too)
+  loaded plugins: … socket-default … vici …
+  dropped capabilities, running as uid 0, gid 0
+  spawning 8 worker threads
+  installed bypass policy for 10.10.10.0/24        (ipsec0 created, netlink live)
   ```
 
-  Two things this is **not**. The main thread sitting in syscall 128
-  (`rt_sigtimedwait`) is strongSwan's normal idle state — the *working* host
-  daemon sits in exactly the same syscall — so an earlier draft of this
-  document that read SIGUSR1's default action as "no signal handler installed,
-  init never completed" was wrong, and is withdrawn. Likewise `wchan` is
-  useless here: an ordinary sleeping process also reports `0`.
+  Its socket is a genuine listener owned by the daemon, and a raw `connect()`
+  proves the connection is *accepted*:
 
-  Because neither VICI nor stroke responds, and charon on its own never reads
-  `swanctl.conf` (that is `swanctl`'s job) or `ipsec.conf` (that is
-  `starter`'s), there is no configuration-only route to an SA from inside a
-  user namespace. Running the testbed as **real root** is the way round it.
+  ```
+  u_str LISTEN 0 3 /var/lib/fera-testbed/charon-a.vici  users:(("charon",pid=125855,fd=24))
+  connect() SUCCEEDED -> something IS listening
+     connected but NO reply in 5s -> accepted, never serviced
+  Recv-Q after the attempt: 0     -> accept() happened; only the reply is missing
+  ```
 
-* **Two defects that only appear with privileges** (`fd17e8f`). Running as
-  real root is what first made the daemon usable, and it immediately exposed
-  two bugs that had been invisible, because both had a *privileged* failure
-  mode and an *unprivileged* fallback that worked:
+  Four consecutive probes with a **180 s** budget each all expired, so this is a
+  hang and not slowness. The daemon binds the socket, accepts, and never services
+  the request.
+
+  Note the unprivileged case too: under `unshare -Urnm` the daemon behaves the
+  same way. Running as real root therefore did *not* fix it — it only removed a
+  second, unrelated blocker. An earlier draft of this document blamed the user
+  namespace; that was withdrawn, because the host's own daemon answers VICI
+  correctly (`uptime: 12 hours`, 16 worker threads, `IKE_SAs: 0`) and the only
+  difference is the namespace charon runs in.
+
+* **Why the diagnosis took eleven runs.** Five explanations were proposed and
+  refuted, recorded here so the next attempt does not repeat them:
+
+  | Claim | Refuted by |
+  |---|---|
+  | charon never finishes initialisation | run 5: plugins load, workers spawn, XFRM policies install |
+  | the user namespace is the cause | run 5: root charon answers fine |
+  | a successful tmpfs mount hides `/run` | run 8: socket dir moved outside `/run`, symptom unchanged |
+  | a slow filesystem starves the event loop | run 11: `/home` is plain ext4 on `/dev/sdd`, not a WSL volume |
+  | the probe budget was too short | run 11: 4 × 180 s all expired |
+  | the network namespace is the cause | run 8: a host-netns daemon with FERA's conf hung too (`rc=124`) |
+
+  Run 10 is the reason several of these could not be separated: it started three
+  daemons *simultaneously* and probed them in sequence, so V and V2 — differing
+  only in their filelog configuration — reported opposite results. Every earlier
+  A/B is confounded in the same way.
+
+* **Operational warning — a diagnostic took the host's `/run` with it.** A probe
+  daemon was once started as a bare `sh -c 'mount -t tmpfs … /var/run'` without
+  `unshare -m`. Because `/var/run` is a symlink to `/run`, that mounted a tmpfs
+  over `/run` **in the host mount namespace** and hid `/run/charon.vici`, so the
+  host's own strongSwan daemon became uncontrollable by `swanctl`. Repair with
+  `umount -l /run` (possibly after killing leftover probe daemons), or reboot.
+  FERA itself never does this: `setup_netns_testbed` starts daemons through
+  `ip netns exec`, which always gets a private mount namespace. Any *ad hoc*
+  probe must do the same.
+
+* **Two defects that privileges did expose** (`fd17e8f`), both now fixed. They
+  were invisible unprivileged because each had a working unprivileged fallback:
 
   | Defect | Symptom | Why unprivileged runs looked fine |
   |---|---|---|
-  | capture interface looked up on the host | `environment not ready: ... capture interface 'fera-va' does not exist` — the run aborted before any traffic | `fera-va` is inside the endpoint namespace and never on the host, so `/sys/class/net` cannot see it; the check now probes `ip -o link show` behind the endpoint prefix |
-  | successful tmpfs mount hid `/run` | charon bound **no** VICI socket, though `charon.ctl`/`.lkp`/`.enfy` were all present and the daemon looked healthy | `/var/run` is a symlink to `/run`, so the private-runtime tmpfs shadows `/run` itself and `/run/fera-testbed/` vanishes — but unprivileged the mount is denied and `\|\| true` swallows it, leaving the real `/run` intact |
+  | capture interface looked up on the host | `environment not ready: … capture interface 'fera-va' does not exist` — the run aborted before any traffic | `fera-va` lives in the endpoint namespace and never on the host, so `/sys/class/net` cannot see it; the check now probes `ip -o link show` behind the endpoint prefix |
+  | private tmpfs shadowed `/run` | charon bound **no** VICI socket at all | unprivileged the mount is denied and `\|\| true` swallows it, leaving the real `/run` intact |
 
-  The second one is a trap worth stating plainly: *the thing that grants root
-  access is the thing that breaks the daemon.* The socket directory is now
-  created inside the private tmpfs before charon is exec'd.
+  A third followed from the second: the socket must live **outside** `/run`,
+  because any private `/var/run` shadows `/run` itself. As root
+  `default_socket_dir()` now returns `/var/lib/fera-testbed`
+  (`de441c2`). Note that a *fixed* socket path is not enough — `ip netns exec`
+  gives each invocation a fresh mount namespace, so the socket directory must be
+  reachable from both charon's namespace and the client's.
 
 * `libstrongswan-standard-plugins` ships `gcm.so` / `ctr.so` / `ccm.so`.
   Without it strongSwan cannot negotiate `aes128gcm16`, so **every AES-GCM
