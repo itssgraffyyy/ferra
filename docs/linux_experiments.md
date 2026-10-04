@@ -51,33 +51,34 @@ surfaced four defects that no unit test could have caught. All four are fixed:
 `aead "rfc4106(gcm(aes))"`), and both charon instances with reachable VICI
 sockets now come up unprivileged.
 
-**Still blocking a real run:**
+**Still blocking a full strongSwan run:**
 
-* **`swanctl` connects to charon and never gets a reply.** Narrowed to charon
-  itself, not to FERA or the testbed. Reproduced with a *standalone* charon and
-  a minimal `strongswan.conf` — no FERA code, no namespace testbed, no `--uri`,
-  no orphans, no pidfile contention:
+* **charon does not start inside a user namespace on this host.** charon itself
+  is fine here: the distribution's own instance answers VICI correctly
+  (`swanctl --stats` reports `uptime: 12 hours`, 16 worker threads,
+  `IKE_SAs: 0 total`), so this is neither a kernel nor a strongSwan fault. What
+  fails is an instance started under `unshare -Urnm`, which loads its plugins,
+  logs `spawning N worker threads`, and then never services anything:
 
   ```
   connect(...)           -> ok, 0.00s
   send({"command": ...}) -> ok, 0.01s
   recv()                 -> TIMEOUT after 6.10s
   swanctl --stats        -> exit 124 (killed by timeout)
+  ipsec listalgs         -> exit 124   (stroke is dead too)
   ```
 
-  charon is demonstrably alive while it does this: it logs
-  `spawning 8 worker threads`, installs bypass policies and reports interface
-  changes. The **mechanism is still not identified**, and `/proc/<pid>/wchan`
-  cannot settle it here — on this kernel even an ordinary sleeping process
-  reports `wchan` as `0`, so a wait-channel reading is not evidence of what a
-  thread is doing.
+  Two things this is **not**. The main thread sitting in syscall 128
+  (`rt_sigtimedwait`) is strongSwan's normal idle state — the *working* host
+  daemon sits in exactly the same syscall — so an earlier draft of this
+  document that read SIGUSR1's default action as "no signal handler installed,
+  init never completed" was wrong, and is withdrawn. Likewise `wchan` is
+  useless here: an ordinary sleeping process also reports `0`.
 
-  What can be said is bounded: charon on this host accepts a VICI connection
-  and never answers a request on it, which makes `--load-conns` / `--initiate`
-  hang indefinitely. A non-WSL Linux host is the practical way around it. This
-  is not something FERA can configure its way out of, and the §1.2 gates are
-  written to fail safely because of it: a run that cannot prove its evidence
-  never claims integration.
+  Because neither VICI nor stroke responds, and charon on its own never reads
+  `swanctl.conf` (that is `swanctl`'s job) or `ipsec.conf` (that is
+  `starter`'s), there is no configuration-only route to an SA from inside a
+  user namespace. Running the testbed as **real root** is the way round it.
 
 * `libstrongswan-standard-plugins` is not installed, and it is the package
   that ships `gcm.so` / `ctr.so` / `ccm.so`. Without it strongSwan cannot
@@ -85,6 +86,38 @@ sockets now come up unprivileged.
   unrunnable on such a host** (the kernel offers `rfc4106(gcm(aes))`; strongSwan
   userspace does not). Install with
   `sudo apt-get install libstrongswan-standard-plugins`.
+
+### 1.1.1 Genuine ESP without strongSwan
+
+Because the daemon is unusable here, one real IPsec run was obtained by
+installing XFRM state and policy **directly** — two namespaces joined by a veth,
+matching `cbc(aes)` + `hmac(sha256)` keys on both ends, a route for the
+protected subnet, and `tcpdump` on the wire. Verified with `tshark`:
+
+```
+11  2.757707  10.10.10.1 → 10.10.10.2  ESP 166 ESP (SPI=0x00001000)
+12  3.776442  10.10.10.1 → 10.10.10.2  ESP 166 ESP (SPI=0x00001000)
+14  4.800777  10.10.10.1 → 10.10.10.2  ESP 166 ESP (SPI=0x00001000)
+16  5.824169  10.10.10.1 → 10.10.10.2  ESP 166 ESP (SPI=0x00001000)
+```
+
+`ip -s xfrm state` on the sending side reports `lastused`, so the SA was not
+merely installed but used. That is **real ESP encapsulation**: the payload
+really was encrypted in tunnel mode.
+
+What this run is **not**, stated plainly:
+
+* there is **no IKE** — the keys were configured statically, so a capture of
+  this shape fails `validate_capture`'s IKE requirement, and it must not be
+  presented as a strongSwan result;
+* it is **one-directional** — outbound packets encapsulate correctly, replies
+  do not come back, so the decapsulation path is still unproven;
+* it exercises the **kernel's** XFRM stack, not strongSwan's proposal
+  negotiation.
+
+It does prove what the blockers could not: this host can carry genuine ESP, so
+the reason FERA cannot collect a dataset here is the IKE daemon, not the IPsec
+implementation.
 
 ### 1.2 Gate and netem wiring: resolved
 
