@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from conftest import REPO_ROOT, ike_and_esp_frames, write_pcap
 
 SCRIPTS = REPO_ROOT / "scripts"
@@ -200,3 +202,85 @@ def test_run_pipeline_can_skip_a_stage(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "experiments: SKIPPED" in result.stdout
+
+
+# --- diagnose_testbed.py ---------------------------------------------------
+# The diagnostic exists because one underlying fault surfaced as four different
+# errors depending on which layer noticed it last.  These tests pin the layer
+# logic, not the host: they must behave identically whatever this machine is.
+
+
+def test_diagnose_testbed_runs_and_reports_every_layer() -> None:
+    result = run_script("diagnose_testbed.py", "--vici-timeout", "2")
+    # 0 = healthy, 1 = something is broken; never a crash (2+).
+    assert result.returncode in {0, 1}, result.stderr
+    for layer in ("run_mount", "capture_tool", "namespaces", "interfaces", "vici", "xfrm"):
+        assert layer in result.stdout, result.stdout
+    assert "failing layer(s)" in result.stdout or "All probed layers healthy" in result.stdout
+
+
+def test_diagnose_testbed_json_is_machine_readable() -> None:
+    import json
+
+    result = run_script("diagnose_testbed.py", "--json", "--vici-timeout", "2")
+    assert result.returncode in {0, 1}, result.stderr
+    report = json.loads(result.stdout)
+    probes = report["probes"]
+    assert probes
+    for probe in probes:
+        assert probe["status"] in {"ok", "bad", "unknown"}
+        assert probe["name"] and probe["detail"]
+
+
+def test_diagnose_testbed_is_read_only() -> None:
+    """It must never mount, unmount, start or stop anything.
+
+    Ad-hoc diagnostics of this problem twice shadowed the host's /run; the tool
+    that replaces them has to be provably incapable of that.  A plain substring
+    scan is not good enough - this file legitimately *tells* the user to mount
+    /run as remediation - so the check parses the module and inspects what is
+    actually called and executed.
+    """
+    import ast
+
+    tree = ast.parse((SCRIPTS / "diagnose_testbed.py").read_text(encoding="utf-8"))
+
+    forbidden_attributes = {"Popen", "system", "fork", "execv", "execve", "spawnv"}
+    # Programs that change the host: never run, in any form.
+    forbidden_programs = {"mount", "umount", "systemctl", "service", "kill", "rm", "tee", "reboot", "shutdown"}
+    # Mutating verbs an `ip` invocation could carry.
+    ip_mutations = {"set", "add", "del", "flush", "change", "replace", "append", "up", "down"}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in forbidden_attributes:
+            pytest.fail(f"diagnose_testbed.py calls forbidden {node.attr}()")
+
+    commands: list[list[str]] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_run"):
+            continue
+        assert node.args, "_run must be called with a literal command"
+        (command,) = node.args
+        assert isinstance(command, ast.List) and command.elts, "command must be a literal list"
+        tokens: list[str] = []
+        for index, element in enumerate(command.elts):
+            if index == 0:
+                # The program must be a fixed literal - never something built.
+                assert isinstance(element, ast.Constant), "the program must be a literal"
+            # Arguments may legitimately be derived (the VICI URI is built from
+            # the socket directory); render anything non-literal back to source.
+            tokens.append(element.value if isinstance(element, ast.Constant) else ast.unparse(element))
+        commands.append(tokens)
+
+    assert commands, "the diagnostic must actually probe something"
+    for tokens in commands:
+        program = tokens[0]
+        assert program not in forbidden_programs, f"diagnose_testbed.py may not run {program!r}"
+        if program == "ip":
+            # `ip` can mutate; this tool may only ever ask.
+            assert not (ip_mutations & set(tokens)), f"mutating ip invocation: {tokens}"
+        if program == "swanctl":
+            # swanctl can load connections and terminate SAs; only list them.
+            assert "--list-sas" in tokens, f"non read-only swanctl invocation: {tokens}"
+            assert not ({"--load-conns", "--initiate", "--terminate", "--clear"} & set(tokens)), tokens
+
