@@ -1,0 +1,12 @@
+# FDR Sentinel
+.env
+*.db
+*.db.*
+__pycache__/
+*.pyc
+storage/
+frontend/node_modules/
+.venv/
+venv/
+.DS_Store
+.env.local
